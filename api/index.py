@@ -1,8 +1,15 @@
-"""
-Vercel Serverless Entrypoint for ARM Starosta.
-"""
+import os
 import sys
 import traceback
+from pathlib import Path
+
+# Add project root and current working dir to sys.path
+_current_dir = Path(__file__).resolve().parent
+_root_dir = _current_dir.parent
+for p in [_root_dir, _current_dir, Path.cwd()]:
+    str_p = str(p)
+    if str_p not in sys.path:
+        sys.path.insert(0, str_p)
 
 try:
     from app.api.app import app
@@ -11,6 +18,7 @@ try:
         handler = Mangum(app, lifespan="off")
     except Exception:
         handler = app
+
 except Exception as e:
     tb = traceback.format_exc()
     print(f"CRITICAL VERCEL INIT ERROR: {tb}", file=sys.stderr)
