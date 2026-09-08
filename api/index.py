@@ -6,11 +6,16 @@ import traceback
 
 try:
     from app.api.app import app
+    try:
+        from mangum import Mangum
+        handler = Mangum(app, lifespan="off")
+    except Exception:
+        handler = app
 except Exception as e:
     tb = traceback.format_exc()
     print(f"CRITICAL VERCEL INIT ERROR: {tb}", file=sys.stderr)
 
-    async def app(scope, receive, send):
+    async def fallback_app(scope, receive, send):
         if scope["type"] == "http":
             body = f"Serverless Startup Exception:\n\n{tb}".encode("utf-8")
             await send({
@@ -25,7 +30,7 @@ except Exception as e:
                 "type": "http.response.body",
                 "body": body,
             })
+    app = fallback_app
+    handler = fallback_app
 
-# Vercel ASGI Handler
-handler = app
 
