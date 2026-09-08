@@ -46,10 +46,25 @@ async def get_current_user(
     res = await db.execute(stmt)
     student = res.scalar_one_or_none()
 
+    if not student and tg_id == settings.STAROSTA_TELEGRAM_ID:
+        first_name = user_dict.get("first_name", "")
+        last_name = user_dict.get("last_name", "")
+        full_name = f"{last_name} {first_name}".strip() or "Староста"
+        student = Student(
+            full_name=full_name,
+            subgroup=1,
+            role=ROLE_STAROSTA,
+            status="ACTIVE",
+            telegram_id=tg_id,
+        )
+        db.add(student)
+        await db.commit()
+        await db.refresh(student)
+
     if not student:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Пользователь не зарегистрирован в вайтлисте группы 240326.",
+            detail="Пользователь не зарегистрирован в базе группы. Обратитесь к старосте.",
         )
 
     if student.status != "ACTIVE":

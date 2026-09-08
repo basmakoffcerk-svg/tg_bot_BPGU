@@ -267,11 +267,24 @@ async def get_current_user(
     result = await db.execute(stmt)
     student = result.scalar_one_or_none()
 
+    if not student and telegram_id == settings.STAROSTA_TELEGRAM_ID:
+        full_name = f"{payload.user.first_name} {payload.user.last_name or ''}".strip() or "Староста"
+        student = Student(
+            full_name=full_name,
+            subgroup=1,
+            role=UserRole.STAROSTA,
+            status=StudentStatus.ACTIVE,
+            telegram_id=telegram_id,
+        )
+        db.add(student)
+        await db.commit()
+        await db.refresh(student)
+
     if not student:
         raise ProblemException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             title="Студент не найден в вайтлисте",
-            detail="Ваш Telegram ID не привязан ни к одной учетной записи группы 240326. Пройдите процедуру онбординга.",
+            detail="Ваш Telegram ID не привязан ни к одной учетной записи. Пройдите регистрацию через бота.",
             type_=ProblemType.USER_NOT_REGISTERED,
             data={"telegram_id": telegram_id},
         )

@@ -13,15 +13,15 @@ class Settings(BaseSettings):
     )
 
     # Telegram
-    BOT_TOKEN: str = "123456789:TEST_BOT_TOKEN_ABCDEFGHIJKLMN"
-    STAROSTA_TELEGRAM_ID: int = 987654321
+    BOT_TOKEN: str = "8713079092:AAG6B-YEpmQ4hl7-xuQtOc2XlrSDG0gSvcw"
+    STAROSTA_TELEGRAM_ID: int = 1131010316
     GROUP_CHAT_ID: int = -1001234567890
 
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    APP_ENV: str = "development"
-    TIMEZONE: str = "Europe/Moscow"
+    APP_ENV: str = "production"
+    TIMEZONE: str = "Europe/Minsk"
     WEBHOOK_URL: str = ""
     WEBHOOK_SECRET: str = "secret_webhook_token"
     FRONTEND_URL: str = "http://localhost:8000"

@@ -85,6 +85,28 @@ async def cmd_start(message: Message):
                     f"⏳ Ваша заявка на привязку профиля (<b>{student.full_name}</b>) находится на рассмотрении у старосты.",
                     parse_mode="HTML",
                 )
+        # Если это староста из .env, но запись еще не создана
+        if user_tg_id == settings.STAROSTA_TELEGRAM_ID:
+            student = Student(
+                full_name=message.from_user.full_name or "Староста",
+                subgroup=1,
+                role=ROLE_STAROSTA,
+                status="ACTIVE",
+                telegram_id=user_tg_id,
+            )
+            db.add(student)
+            await db.commit()
+            await message.answer(
+                f"👋 Добро пожаловать, <b>{student.full_name}</b>!\n\n"
+                f"Вы авторизованы как <b>Староста</b>.\n"
+                f"Используйте команду /admin для загрузки состава группы и расписания!",
+                reply_markup=get_reply_main_keyboard(ROLE_STAROSTA),
+                parse_mode="HTML",
+            )
+            await message.answer(
+                "📱 Главное меню Пульта управления:",
+                reply_markup=get_main_menu_keyboard(ROLE_STAROSTA),
+            )
             return
 
         # Если не привязан — показываем свободный вайтлист
@@ -94,12 +116,14 @@ async def cmd_start(message: Message):
 
         if not free_students:
             await message.answer(
-                "❌ Все студенты группы 240326 уже привязаны. Если возникла ошибка, обратитесь к старосте."
+                "ℹ️ <b>Список группы еще не загружен старостой.</b>\n\n"
+                "Староста может загрузить список группы в команду /admin через Excel, CSV или текст.",
+                parse_mode="HTML",
             )
             return
 
         await message.answer(
-            "🎓 <b>Добро пожаловать в АРМ Старосты группы 240326 Матинф БГПУ!</b>\n\n"
+            "🎓 <b>Добро пожаловать в АРМ Старосты!</b>\n\n"
             "Для начала работы выберите свои ФИО из списка журнала группы:",
             reply_markup=get_student_claim_keyboard(free_students),
             parse_mode="HTML",
