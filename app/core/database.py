@@ -13,7 +13,13 @@ from app.core.config import settings
 
 
 def create_engine_with_wal(db_url: str = settings.DATABASE_URL) -> AsyncEngine:
-    """Создает движок с обязательным включением WAL и foreign keys для SQLite."""
+    """Создает асинхронный движок для SQLite или PostgreSQL."""
+    # Нормализация для Vercel Postgres / Neon (postgres:// -> postgresql+asyncpg://)
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+asyncpg://"):
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
     is_sqlite = db_url.startswith("sqlite")
     engine = create_async_engine(
         db_url,

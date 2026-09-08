@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
-from app.api.routes import alerts, attendance, auth, reports, schedule
+from app.api.routes import alerts, attendance, auth, reports, schedule, webhook
 from app.core.config import settings
 
 app = FastAPI(
@@ -41,6 +41,7 @@ app.include_router(schedule.router, prefix="/api/v1")
 app.include_router(attendance.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
 app.include_router(alerts.router, prefix="/api/v1")
+app.include_router(webhook.router, prefix="/api")
 
 # Статика фронтенда Mini App
 webapp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "webapp")
