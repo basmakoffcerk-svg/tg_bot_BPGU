@@ -1,28 +1,23 @@
 {
   "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "api/index.py",
-      "use": "@vercel/python"
+      "source": "/api/(.*)",
+      "destination": "/api/index.py"
     },
     {
-      "src": "webapp/**",
-      "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "api/index.py"
+      "source": "/webapp/(.*)",
+      "destination": "/webapp/$1"
     },
     {
-      "src": "/webapp/(.*)",
-      "dest": "webapp/$1"
+      "source": "/",
+      "destination": "/webapp/index.html"
     },
     {
-      "src": "/(.*)",
-      "dest": "webapp/$1"
+      "source": "/((?!api|webapp).*)",
+      "destination": "/webapp/$1"
     }
   ]
 }
+
 
