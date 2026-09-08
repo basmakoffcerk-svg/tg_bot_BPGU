@@ -1,27 +1,28 @@
 {
   "version": 2,
-  "functions": {
-    "api/index.py": {
-      "runtime": "python3.12"
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "webapp/**",
+      "use": "@vercel/static"
     }
-  },
-  "rewrites": [
+  ],
+  "routes": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.py"
-    },
-
-    {
-      "source": "/webapp/(.*)",
-      "destination": "/webapp/$1"
+      "src": "/api/(.*)",
+      "dest": "api/index.py"
     },
     {
-      "source": "/",
-      "destination": "/webapp/index.html"
+      "src": "/webapp/(.*)",
+      "dest": "webapp/$1"
     },
     {
-      "source": "/((?!api|webapp).*)",
-      "destination": "/webapp/$1"
+      "src": "/(.*)",
+      "dest": "webapp/$1"
     }
   ]
 }
+
