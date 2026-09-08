@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>АРМ Старосты — Группа 240326 Матинф</title>
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app" class="container">
+    <!-- Панель отладки для браузера (Dev / Demo Mode) -->
+    <div id="dev-bar" class="dev-bar" style="display: none;">
+      <span class="dev-title">🎭 Профиль:</span>
+      <select id="dev-user-select" class="dev-select"></select>
+    </div>
+
+    <!-- Шапка профиля -->
+    <header class="header">
+      <div class="user-info">
+        <h2 id="user-name">Загрузка...</h2>
+        <div class="user-meta">
+          <span class="badge" id="user-group">240326 Матинф</span>
+          <span class="badge" id="user-subgroup">Подгруппа ...</span>
+          <span class="badge badge-role" id="user-role">...</span>
+        </div>
+      </div>
+      <div class="week-info">
+        <span id="week-badge" class="badge-week">...</span>
+      </div>
+    </header>
+
+    <!-- Навигация по вкладкам -->
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="tab-schedule">📅 Расписание</button>
+      <button class="tab-btn" id="tab-btn-grid" data-tab="tab-grid" style="display: none;">📋 Шахматка</button>
+      <button class="tab-btn" id="tab-btn-alerts" data-tab="tab-alerts" style="display: none;">📢 Алерты</button>
+    </nav>
+
+    <!-- Вкладка 1: Расписание студента -->
+    <section id="tab-schedule" class="tab-content active">
+      <div class="section-title">Занятия на сегодня</div>
+      <div id="schedule-list" class="cards-list">
+        <div class="skeleton-card">Загрузка расписания...</div>
+      </div>
+    </section>
+
+    <!-- Вкладка 2: Шахматка старосты -->
+    <section id="tab-grid" class="tab-content">
+      <div class="grid-controls">
+        <div class="section-title" id="grid-pair-title">Шахматка группы</div>
+        <div style="display: flex; gap: 6px;">
+          <button id="btn-export-excel" class="btn btn-primary btn-sm">📥 Excel</button>
+          <button id="btn-lock-pair" class="btn btn-warning btn-sm">🔒 Зафиксировать</button>
+        </div>
+      </div>
+      <div class="grid-summary" id="grid-summary">
+        <!-- Сводка: Всего, Было, Пропусков -->
+      </div>
+      <div id="grid-students-list" class="grid-list">
+        <!-- Список 25-30 студентов -->
+      </div>
+    </section>
+
+    <!-- Вкладка 3: Экстренные оповещения -->
+    <section id="tab-alerts" class="tab-content">
+      <div class="section-title">Экстренное вещание</div>
+      <div class="alert-form">
+        <label>Тип сообщения:</label>
+        <select id="alert-type" class="form-input">
+          <option value="CRITICAL">🔴 Критический алерт (@all + принудительный ЛС)</option>
+          <option value="INFO">🟡 Информационное объявление (в группу)</option>
+        </select>
+        <label>Тема:</label>
+        <input type="text" id="alert-title" class="form-input" placeholder="Перенос пары...">
+        <label>Текст сообщения:</label>
+        <textarea id="alert-body" class="form-input" rows="4" placeholder="Введите текст..."></textarea>
+        <button id="btn-send-alert" class="btn btn-danger">Отправить оповещение группе</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Модальное окно уважительной причины (Override) -->
+  <div id="excuse-modal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card">
+      <h3 id="modal-student-name">Студент</h3>
+      <p>Выберите причину пропуска:</p>
+      <select id="modal-status-select" class="form-input">
+        <option value="PRESENT">🟢 Присутствует (Был)</option>
+        <option value="ABSENT_UNEXCUSED">🔴 Неуважительный пропуск (Н)</option>
+        <option value="ABSENT_EXCUSED">🟣 Уважительный пропуск (У)</option>
+        <option value="MANUAL_CONFIRM">🟡 Подтвержден вручную (телефон сел)</option>
+        <option value="LATE">🔵 Опоздание (О)</option>
+      </select>
+      <input type="text" id="modal-excuse-reason" class="form-input" placeholder="Номер справки или заявления...">
+      <div class="modal-actions">
+        <button id="btn-modal-cancel" class="btn btn-secondary">Отмена</button>
+        <button id="btn-modal-save" class="btn btn-primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Всплывающий статус (Toast) -->
+  <div id="toast" class="toast"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

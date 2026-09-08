@@ -1,0 +1,1875 @@
+# Milestone 1 Architectural Deep Dive: FastAPI REST API, Pydantic v2 Schemas, RFC 7807 & Application Lifespan
+
+**Agent:** `explorer_m1_3`  
+**Date:** 2026-09-08  
+**Scope:** `app/schemas/`, `app/api/`, `app/main.py`  
+**Authoritative References:** `ORIGINAL_REQUEST.md`, `PROJECT.md`, `docs/API.md`, `docs/DATABASE.md`, `docs/SRS.md`, `docs/ARCHITECTURE.md`, `TEST_INFRA.md`  
+
+---
+
+## 1. Executive Summary & System Context
+
+This architectural investigation delivers the complete design, contract specification, and production-grade implementation blueprints for the **FastAPI REST API layer and Application Lifespan** of the «АРМ Старосты» system (Academic Group 240326, Faculty of Physics and Mathematics Education, BSPU).
+
+The API layer bridges the **Telegram Mini App (TMA SPA frontend)**, the **Telegram Bot engine (aiogram 3.x)**, and the **SQLite WAL async database**.
+
+### Key Architectural Pillars:
+1. **Pydantic v2 Native Schemas (`app/schemas/`)**: Strict typing using modern Pydantic v2 syntax (`model_config = ConfigDict(from_attributes=True)`), robust boundary validations (`ge`, `le`, `gt`, `min_length`, `max_length`), and exact alignment with `docs/API.md`.
+2. **Standardized Error Handling (RFC 7807 Problem Details)**: Complete implementation of `ProblemDetail` schemas, `ProblemException` hierarchy, and FastAPI global exception handlers producing `application/problem+json` formatted responses for business logic rejections, 401/403 security errors, and 422 validation errors.
+3. **Session Lifecycle & Dependency Injection (`app/api/deps.py`)**: Safe async database session scoping with automated rollback and cleanup, combined with Telegram `initData` cryptographic resolution into active `Student` entities and 3-tier RBAC guards (`STUDENT`, `ZAM`, `STAROSTA`).
+4. **End-to-End REST Endpoints (`app/api/endpoints/`)**: Fully articulated handlers for:
+   - Healthcheck & database telemetry (`/api/v1/health`)
+   - Telegram initialization and user profile resolution (`/api/v1/auth/telegram`)
+   - Today's schedule with parity and subgroup filtering (`/api/v1/schedule/today`)
+   - Geolocation check-in with Haversine verification (`/api/v1/attendance/checkin`)
+   - Interactive attendance matrix grid (`/api/v1/attendance/grid/{pair_id}`)
+   - Starosta manual status override with audit logging (`/api/v1/attendance/override`)
+   - Pair locking mechanism (`/api/v1/attendance/lock/{pair_id}`)
+   - Emergency & info alert broadcasts (`/api/v1/alerts/broadcast`)
+   - Dean's office report export dispatch (`/api/v1/reports/export`)
+5. **Unified Application Lifespan (`app/main.py`)**: Production ASGI setup incorporating automated database table generation, idempotently triggered seed data execution, CORS middleware tailored for Telegram webviews, and static asset serving for `webapp/`.
+
+---
+
+## 2. Pydantic v2 Schemas Architecture (`app/schemas/`)
+
+All schemas are constructed using **Pydantic v2** (`BaseModel`, `Field`, `ConfigDict`, `model_validator`). Models that serialize database entities declare `model_config = ConfigDict(from_attributes=True)`.
+
+### 2.1. File Layout in `app/schemas/`
+```
+app/schemas/
+├── __init__.py          # Re-exports all schemas for clean namespace imports
+├── base.py              # BaseSchema with standard ConfigDict
+├── error.py             # RFC 7807 ProblemDetail schema
+├── health.py            # Healthcheck telemetry schema
+├── auth.py              # Telegram auth, UserProfile, Permissions, CurrentWeek
+├── schedule.py          # ScheduleToday, PairItem, CheckinStatus, BuildingCoords
+├── attendance.py        # Checkin, Grid matrix, Override, Lock
+├── alerts.py            # Broadcast alert request and response
+└── reports.py           # Report export request and response
+```
+
+---
+
+### 2.2. Production Code Blueprint for `app/schemas/`
+
+#### `app/schemas/base.py`
+```python
+"""
+app/schemas/base.py
+Base Pydantic v2 model configuration for API schemas.
+"""
+from pydantic import BaseModel, ConfigDict
+
+
+class BaseSchema(BaseModel):
+    """Base schema enabling ORM compatibility and attribute population."""
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+    )
+```
+
+#### `app/schemas/error.py` (RFC 7807 Problem Details)
+```python
+"""
+app/schemas/error.py
+RFC 7807 Problem Details schema for error responses.
+"""
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
+
+class ProblemDetail(BaseModel):
+    """
+    Standard RFC 7807 Problem Details structure.
+    https://datatracker.ietf.org/doc/html/rfc7807
+    """
+    type: str = Field(
+        default="about:blank",
+        description="URI reference that identifies the problem type.",
+    )
+    title: str = Field(
+        ...,
+        description="Short, human-readable summary of the problem type.",
+    )
+    status: int = Field(
+        ...,
+        description="The HTTP status code generated by the origin server.",
+    )
+    detail: Optional[str] = Field(
+        None,
+        description="Human-readable explanation specific to this occurrence of the problem.",
+    )
+    instance: Optional[str] = Field(
+        None,
+        description="URI reference that identifies the specific occurrence of the problem.",
+    )
+    data: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Structured contextual metadata associated with the error.",
+    )
+    invalid_params: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Validation errors breakdown for 422 Unprocessable Entity responses.",
+    )
+```
+
+#### `app/schemas/health.py`
+```python
+"""
+app/schemas/health.py
+Healthcheck & telemetry schemas.
+"""
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel, Field
+
+
+class HealthCheckResponse(BaseModel):
+    """Response returned by GET /api/v1/health."""
+    status: str = Field(default="ok", description="Application service status")
+    database: str = Field(default="connected", description="Database connectivity status")
+    timestamp: datetime = Field(..., description="Current server UTC timestamp")
+    version: str = Field(default="1.0.0", description="Application version")
+    bot: Optional[str] = Field(default="configured", description="Telegram bot configuration status")
+```
+
+#### `app/schemas/auth.py`
+```python
+"""
+app/schemas/auth.py
+Authentication, profile, permissions, and academic week schemas.
+"""
+from typing import Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field
+from app.schemas.base import BaseSchema
+
+
+class UserProfile(BaseSchema):
+    """Authenticated student profile returned to Telegram Mini App."""
+    id: int = Field(..., description="Student database identifier")
+    telegram_id: Optional[int] = Field(None, description="Telegram User ID")
+    full_name: str = Field(..., description="Full name according to dean's roster")
+    subgroup: int = Field(..., ge=1, le=2, description="Academic subgroup (1 or 2)")
+    role: Literal["STUDENT", "ZAM", "STAROSTA"] = Field(..., description="RBAC authorization role")
+    status: Literal["PENDING", "ACTIVE", "BLOCKED"] = Field(..., description="Account lifecycle status")
+
+
+class PermissionsInfo(BaseModel):
+    """Action permission flags for UI rendering and feature gating."""
+    can_view_grid: bool = Field(..., description="Permission to view class attendance grid")
+    can_override_status: bool = Field(..., description="Permission to manually override student status")
+    can_lock_pairs: bool = Field(..., description="Permission to permanently lock attendance for a pair")
+    can_broadcast_critical: bool = Field(..., description="Permission to send emergency broadcasts")
+    can_export_reports: bool = Field(..., description="Permission to trigger official Excel report exports")
+
+
+class CurrentWeekInfo(BaseModel):
+    """Academic calendar week metadata."""
+    week_number: int = Field(..., ge=1, le=25, description="Semester week number (1..N)")
+    week_type: Literal["ODD", "EVEN"] = Field(..., description="Week parity (ODD=Числитель, EVEN=Знаменатель)")
+    is_study_day: bool = Field(..., description="True if today is a scheduled study day (Mon..Sat)")
+
+
+class TelegramAuthResponse(BaseModel):
+    """Response returned by POST /api/v1/auth/telegram."""
+    user: UserProfile
+    permissions: PermissionsInfo
+    current_week: CurrentWeekInfo
+```
+
+#### `app/schemas/schedule.py`
+```python
+"""
+app/schemas/schedule.py
+Daily schedule, classroom coordinate, and pair item schemas.
+"""
+from datetime import date, datetime
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field
+from app.schemas.base import BaseSchema
+
+
+class BuildingCoordinates(BaseModel):
+    """Geographical reference coordinates for a university building / room."""
+    lat: float = Field(..., ge=-90.0, le=90.0, description="Latitude in decimal degrees")
+    lon: float = Field(..., ge=-180.0, le=180.0, description="Longitude in decimal degrees")
+
+
+class CheckinStatusInfo(BaseModel):
+    """Real-time availability of the GPS check-in window."""
+    is_active: bool = Field(..., description="True if the pair is currently open for check-in")
+    window_start: str = Field(..., description="Opening time in HH:MM format (-5 min from start)")
+    window_end: str = Field(..., description="Closing time in HH:MM format (+15 min from start)")
+    seconds_remaining: Optional[int] = Field(None, description="Seconds remaining before window closes")
+    reason_closed: Optional[Literal["TIME_EXPIRED", "PAIR_NOT_STARTED", "PAIR_LOCKED", "ALREADY_CHECKED_IN"]] = Field(
+        None, description="Reason code when is_active is False"
+    )
+
+
+class AttendanceStatus(BaseSchema):
+    """Personal check-in record for the authenticated student."""
+    status: Literal["PRESENT", "ABSENT_UNEXCUSED", "ABSENT_EXCUSED", "MANUAL_CONFIRM", "LATE"] = Field(
+        ..., description="Current attendance status code"
+    )
+    distance: Optional[float] = Field(None, description="Recorded distance in meters from building center")
+    checkin_time: Optional[datetime] = Field(None, description="Timestamp when check-in was registered")
+
+
+class PairItem(BaseModel):
+    """Item representing a scheduled pair for today."""
+    pair_id: int = Field(..., description="Unique ID from pairs_registry table")
+    pair_number: int = Field(..., ge=1, le=6, description="Bell schedule slot number (1..6)")
+    time_start: str = Field(..., description="Pair start time in HH:MM format (e.g. '08:30')")
+    time_end: str = Field(..., description="Pair end time in HH:MM format (e.g. '10:00')")
+    subject: str = Field(..., description="Academic discipline title")
+    teacher: Optional[str] = Field(None, description="Instructor name")
+    type: Literal["LECTURE", "PRACTICE", "LAB"] = Field(..., description="Class type")
+    room: str = Field(..., description="Classroom number (e.g. '304', '212-Б')")
+    building: str = Field(..., description="Building name (e.g. 'Главный корпус')")
+    building_coordinates: BuildingCoordinates
+    checkin_status: CheckinStatusInfo
+    my_attendance: Optional[AttendanceStatus] = Field(None, description="User's attendance record, if any")
+
+
+class ScheduleTodayResponse(BaseModel):
+    """Response returned by GET /api/v1/schedule/today."""
+    date: date = Field(..., description="Current calendar date (YYYY-MM-DD)")
+    day_of_week: int = Field(..., ge=1, le=7, description="ISO weekday (1=Monday .. 7=Sunday)")
+    week_type: Literal["ODD", "EVEN"] = Field(..., description="Current week parity")
+    pairs: List[PairItem] = Field(default_factory=list, description="List of pairs for student's subgroup")
+```
+
+#### `app/schemas/attendance.py`
+```python
+"""
+app/schemas/attendance.py
+Geolocation check-in, attendance matrix grid, status override, and pair locking schemas.
+"""
+from datetime import datetime
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field
+from app.schemas.base import BaseSchema
+
+
+class CheckinRequest(BaseModel):
+    """Payload for POST /api/v1/attendance/checkin."""
+    pair_id: int = Field(..., gt=0, description="Target pair registry ID")
+    client_lat: float = Field(..., ge=-90.0, le=90.0, description="Device GPS latitude")
+    client_lon: float = Field(..., ge=-180.0, le=180.0, description="Device GPS longitude")
+    accuracy: float = Field(..., gt=0.0, description="Horizontal GPS accuracy radius in meters (<= 50.0m)")
+    timestamp: float = Field(..., description="Client epoch seconds when coordinates were sampled")
+
+
+class CheckinResponse(BaseModel):
+    """Response returned upon successful check-in."""
+    status: Literal["PRESENT"] = Field(default="PRESENT", description="Assigned attendance status")
+    pair_id: int = Field(..., description="Pair registry ID")
+    distance_meters: float = Field(..., description="Calculated Haversine distance in meters")
+    checkin_time: datetime = Field(..., description="Server timestamp of accepted check-in")
+    message: str = Field(default="Присутствие успешно подтверждено!", description="User-facing success notice")
+
+
+class StudentGridItem(BaseSchema):
+    """Individual student row in the starosta chessboard grid."""
+    student_id: int = Field(..., description="Student database identifier")
+    full_name: str = Field(..., description="Student full name")
+    subgroup: int = Field(..., description="Student academic subgroup (1 or 2)")
+    status: Literal["PRESENT", "ABSENT_UNEXCUSED", "ABSENT_EXCUSED", "MANUAL_CONFIRM", "LATE"] = Field(
+        ..., description="Attendance status code"
+    )
+    badge_color: Literal["green", "grey", "yellow", "blue", "purple"] = Field(
+        ..., description="UI badge color for the chessboard"
+    )
+    distance: Optional[float] = Field(None, description="Check-in distance in meters")
+    checkin_time: Optional[str] = Field(None, description="Check-in time (HH:MM:SS format)")
+    verified_by_admin: bool = Field(default=False, description="True if status was modified by starosta/zam")
+    excuse_reason: Optional[str] = Field(None, description="Documented excuse reason if ABSENT_EXCUSED")
+    note: Optional[str] = Field(None, description="Administrative note or comment")
+
+
+class GridSummary(BaseModel):
+    """Statistical summary for the attendance grid."""
+    total_students: int = Field(..., description="Total student count in view")
+    present_count: int = Field(..., description="Count of PRESENT students")
+    absent_unexcused_count: int = Field(..., description="Count of ABSENT_UNEXCUSED students ('Н')")
+    absent_excused_count: int = Field(..., description="Count of ABSENT_EXCUSED students ('У')")
+    manual_confirmed_count: int = Field(..., description="Count of MANUAL_CONFIRM students")
+    late_count: int = Field(default=0, description="Count of LATE students ('О')")
+
+
+class GridResponse(BaseModel):
+    """Response returned by GET /api/v1/attendance/grid/{pair_id}."""
+    pair_id: int = Field(..., description="Pair registry ID")
+    subject: str = Field(..., description="Academic discipline title")
+    is_locked: bool = Field(..., description="True if the pair attendance journal is locked")
+    summary: GridSummary
+    students: List[StudentGridItem] = Field(default_factory=list)
+
+
+class OverrideRequest(BaseModel):
+    """Payload for PATCH /api/v1/attendance/override."""
+    pair_id: int = Field(..., gt=0, description="Target pair registry ID")
+    student_id: int = Field(..., gt=0, description="Target student ID")
+    new_status: Literal["PRESENT", "ABSENT_UNEXCUSED", "ABSENT_EXCUSED", "MANUAL_CONFIRM", "LATE"] = Field(
+        ..., description="New status to set"
+    )
+    excuse_reason: Optional[str] = Field(None, max_length=500, description="Required explanation for excused status")
+
+
+class OverrideResponse(BaseModel):
+    """Response returned by PATCH /api/v1/attendance/override."""
+    success: bool = Field(default=True)
+    pair_id: int
+    student_id: int
+    status: Literal["PRESENT", "ABSENT_UNEXCUSED", "ABSENT_EXCUSED", "MANUAL_CONFIRM", "LATE"]
+    updated_at: datetime
+
+
+class LockPairResponse(BaseModel):
+    """Response returned by POST /api/v1/attendance/lock/{pair_id}."""
+    success: bool = Field(default=True)
+    pair_id: int
+    is_locked: bool = Field(default=True)
+    locked_at: datetime
+```
+
+#### `app/schemas/alerts.py`
+```python
+"""
+app/schemas/alerts.py
+Emergency broadcasting and group notification schemas.
+"""
+from typing import Literal
+from pydantic import BaseModel, Field
+
+
+class BroadcastRequest(BaseModel):
+    """Payload for POST /api/v1/alerts/broadcast."""
+    type: Literal["CRITICAL", "INFO"] = Field(..., description="Severity level of the broadcast")
+    title: str = Field(..., min_length=1, max_length=150, description="Announcement title")
+    body: str = Field(..., min_length=1, max_length=4000, description="Message text")
+
+
+class BroadcastResponse(BaseModel):
+    """Response returned by POST /api/v1/alerts/broadcast (HTTP 202 Accepted)."""
+    broadcast_id: int = Field(..., description="Broadcast history record ID")
+    queued_recipients: int = Field(..., description="Number of recipients queued for message delivery")
+    channel_posted: bool = Field(default=True, description="Whether message was dispatched to group chat")
+    status: Literal["SENDING", "QUEUED"] = Field(default="SENDING", description="Delivery processing status")
+```
+
+#### `app/schemas/reports.py`
+```python
+"""
+app/schemas/reports.py
+Official Excel report export request and response schemas.
+"""
+from datetime import date
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, model_validator
+
+
+class ReportExportRequest(BaseModel):
+    """Payload for POST /api/v1/reports/export."""
+    date_from: date = Field(..., description="Start date of reporting period")
+    date_to: date = Field(..., description="End date of reporting period")
+    delivery_method: Literal["TELEGRAM_DM", "DOWNLOAD"] = Field(
+        default="TELEGRAM_DM", description="Delivery channel for generated spreadsheet"
+    )
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "ReportExportRequest":
+        if self.date_from > self.date_to:
+            raise ValueError("Параметр date_from не может быть позже date_to.")
+        return self
+
+
+class ReportExportResponse(BaseModel):
+    """Response returned by POST /api/v1/reports/export."""
+    file_name: str = Field(..., description="Generated .xlsx file name")
+    delivered_to_telegram: bool = Field(..., description="Whether file was delivered to requester's Telegram")
+    total_pairs: int = Field(..., description="Number of pairs evaluated in period")
+    total_absent_hours: int = Field(..., description="Total absent hours accumulated across group")
+    download_url: Optional[str] = Field(None, description="Direct download link if delivery_method is DOWNLOAD")
+```
+
+#### `app/schemas/__init__.py`
+```python
+"""
+app/schemas/__init__.py
+Centralized re-export of all Pydantic v2 schemas.
+"""
+from app.schemas.base import BaseSchema
+from app.schemas.error import ProblemDetail
+from app.schemas.health import HealthCheckResponse
+from app.schemas.auth import (
+    UserProfile,
+    PermissionsInfo,
+    CurrentWeekInfo,
+    TelegramAuthResponse,
+)
+from app.schemas.schedule import (
+    BuildingCoordinates,
+    CheckinStatusInfo,
+    AttendanceStatus,
+    PairItem,
+    ScheduleTodayResponse,
+)
+from app.schemas.attendance import (
+    CheckinRequest,
+    CheckinResponse,
+    StudentGridItem,
+    GridSummary,
+    GridResponse,
+    OverrideRequest,
+    OverrideResponse,
+    LockPairResponse,
+)
+from app.schemas.alerts import BroadcastRequest, BroadcastResponse
+from app.schemas.reports import ReportExportRequest, ReportExportResponse
+
+__all__ = [
+    "BaseSchema",
+    "ProblemDetail",
+    "HealthCheckResponse",
+    "UserProfile",
+    "PermissionsInfo",
+    "CurrentWeekInfo",
+    "TelegramAuthResponse",
+    "BuildingCoordinates",
+    "CheckinStatusInfo",
+    "AttendanceStatus",
+    "PairItem",
+    "ScheduleTodayResponse",
+    "CheckinRequest",
+    "CheckinResponse",
+    "StudentGridItem",
+    "GridSummary",
+    "GridResponse",
+    "OverrideRequest",
+    "OverrideResponse",
+    "LockPairResponse",
+    "BroadcastRequest",
+    "BroadcastResponse",
+    "ReportExportRequest",
+    "ReportExportResponse",
+]
+```
+
+---
+
+## 3. RFC 7807 Problem Details Error Architecture
+
+RFC 7807 defines a standardized "problem details" format for HTTP APIs. Every non-2xx response from the server MUST conform to this specification, with `Content-Type: application/problem+json`.
+
+### 3.1. Standard Error Types Catalog
+| Error URI Type | HTTP Status | Standard Title | Trigger Scenario |
+|---|:---:|---|---|
+| `https://errors.starosta.app/unauthorized` | 401 | Не авторизован | Missing or invalid Telegram `initData` signature |
+| `https://errors.starosta.app/token-expired` | 401 | Подпись initData устарела | `auth_date` older than 24 hours |
+| `https://errors.starosta.app/account-pending` | 403 | Аккаунт ожидает подтверждения | Student in `PENDING` status attempts Mini App action |
+| `https://errors.starosta.app/forbidden-role` | 403 | Недостаточно прав | `STUDENT` attempting starosta-only endpoint |
+| `https://errors.starosta.app/inaccurate-gps` | 400 | Неточный GPS сигнал | Client sensor reported `accuracy > 50.0` meters |
+| `https://errors.starosta.app/out-of-bounds` | 400 | Геолокация вне аудитории | Distance $d > 150.0$ meters from classroom |
+| `https://errors.starosta.app/checkin-window-closed` | 400 | Окно чекина закрыто | Time is outside $[-5\text{ min} \dots +15\text{ min}]$ window |
+| `https://errors.starosta.app/pair-locked` | 400 | Журнал пары заблокирован | Checkin attempted on locked pair |
+| `https://errors.starosta.app/clock-skew` | 400 | Рассинхронизация времени | Sensor timestamp differs by $> 30$ seconds |
+| `https://errors.starosta.app/not-found` | 404 | Ресурс не найден | Non-existent `pair_id` or `student_id` |
+| `https://errors.starosta.app/validation-error` | 422 | Ошибка валидации параметров | Pydantic payload / query / path validation failure |
+| `https://errors.starosta.app/internal-error` | 500 | Внутренняя ошибка сервера | Unhandled Python runtime exception |
+
+---
+
+### 3.2. Exception Classes & Handlers Design
+
+```python
+"""
+app/core/exceptions.py
+RFC 7807 Problem Exception definitions and catalog constants.
+"""
+from typing import Any, Dict, Optional
+from fastapi import HTTPException
+
+
+class ProblemType:
+    BLANK = "about:blank"
+    UNAUTHORIZED = "https://errors.starosta.app/unauthorized"
+    TOKEN_EXPIRED = "https://errors.starosta.app/token-expired"
+    ACCOUNT_PENDING = "https://errors.starosta.app/account-pending"
+    ACCOUNT_BLOCKED = "https://errors.starosta.app/account-blocked"
+    FORBIDDEN_ROLE = "https://errors.starosta.app/forbidden-role"
+    USER_NOT_REGISTERED = "https://errors.starosta.app/user-not-registered"
+    NOT_FOUND = "https://errors.starosta.app/not-found"
+    OUT_OF_BOUNDS = "https://errors.starosta.app/out-of-bounds"
+    INACCURATE_GPS = "https://errors.starosta.app/inaccurate-gps"
+    CHECKIN_WINDOW_CLOSED = "https://errors.starosta.app/checkin-window-closed"
+    PAIR_LOCKED = "https://errors.starosta.app/pair-locked"
+    ALREADY_CHECKED_IN = "https://errors.starosta.app/already-checked-in"
+    CLOCK_SKEW = "https://errors.starosta.app/clock-skew"
+    VALIDATION_ERROR = "https://errors.starosta.app/validation-error"
+    INTERNAL_ERROR = "https://errors.starosta.app/internal-error"
+
+
+class ProblemException(HTTPException):
+    """
+    HTTP Exception carrying full RFC 7807 metadata.
+    """
+    def __init__(
+        self,
+        status_code: int,
+        title: str,
+        detail: Optional[str] = None,
+        type_: str = ProblemType.BLANK,
+        data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ):
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+        self.title = title
+        self.type_ = type_
+        self.data = data
+```
+
+#### Global Exception Handler Registration (in `app/main.py`)
+```python
+import logging
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from app.core.exceptions import ProblemException, ProblemType
+from app.schemas.error import ProblemDetail
+
+logger = logging.getLogger("starosta.api")
+
+
+def setup_exception_handlers(app: FastAPI) -> None:
+    """Register RFC 7807 problem details handlers across all exception types."""
+
+    @app.exception_handler(ProblemException)
+    async def problem_exception_handler(request: Request, exc: ProblemException) -> JSONResponse:
+        content = ProblemDetail(
+            type=exc.type_,
+            title=exc.title,
+            status=exc.status_code,
+            detail=exc.detail,
+            instance=request.url.path,
+            data=exc.data,
+        ).model_dump(exclude_none=True)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=content,
+            media_type="application/problem+json",
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        # Default mapping for standard FastAPI HTTPExceptions
+        title = "Ошибка запроса"
+        type_ = ProblemType.BLANK
+        data = None
+
+        if exc.status_code == 401:
+            title = "Ошибка аутентификации"
+            type_ = ProblemType.UNAUTHORIZED
+        elif exc.status_code == 403:
+            title = "Доступ запрещен"
+            type_ = ProblemType.FORBIDDEN_ROLE
+        elif exc.status_code == 404:
+            title = "Ресурс не найден"
+            type_ = ProblemType.NOT_FOUND
+
+        detail_text = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        if isinstance(exc.detail, dict):
+            # If detail was structured
+            type_ = exc.detail.get("type", type_)
+            title = exc.detail.get("title", title)
+            detail_text = exc.detail.get("detail", detail_text)
+            data = exc.detail.get("data")
+
+        content = ProblemDetail(
+            type=type_,
+            title=title,
+            status=exc.status_code,
+            detail=detail_text,
+            instance=request.url.path,
+            data=data,
+        ).model_dump(exclude_none=True)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=content,
+            media_type="application/problem+json",
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        formatted_errors = []
+        for error in exc.errors():
+            loc = " -> ".join(str(item) for item in error.get("loc", []))
+            formatted_errors.append({
+                "loc": loc,
+                "msg": error.get("msg"),
+                "type": error.get("type"),
+            })
+
+        content = ProblemDetail(
+            type=ProblemType.VALIDATION_ERROR,
+            title="Ошибка валидации параметров запроса",
+            status=422,
+            detail="Один или несколько переданных параметров не соответствуют схеме API.",
+            instance=request.url.path,
+            invalid_params=formatted_errors,
+        ).model_dump(exclude_none=True)
+        return JSONResponse(
+            status_code=422,
+            content=content,
+            media_type="application/problem+json",
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("Unhandled server exception on %s: %s", request.url.path, exc)
+        content = ProblemDetail(
+            type=ProblemType.INTERNAL_ERROR,
+            title="Внутренняя ошибка сервера",
+            status=500,
+            detail="Произошла непредвиденная ошибка на стороне сервера. Повторите попытку позже.",
+            instance=request.url.path,
+        ).model_dump(exclude_none=True)
+        return JSONResponse(
+            status_code=500,
+            content=content,
+            media_type="application/problem+json",
+        )
+```
+
+---
+
+## 4. Session Lifecycle & Dependency Injection (`app/api/deps.py`)
+
+The dependency injection layer manages the lifecycle of asynchronous database sessions and resolves Telegram authentication headers into validated, role-checked student entities.
+
+```
+Incoming HTTP Request
+       │
+       ├── Header: X-Telegram-Init-Data ────────┐
+       │                                        ▼
+       │                                  get_db (Yields AsyncSession)
+       │                                        │
+       ▼                                        ▼
+get_validated_init_data (Validates HMAC-SHA256 & 24h freshness)
+       │
+       ▼
+get_current_user (Looks up student in SQLite by telegram_id)
+       │
+       ▼
+get_current_active_student (Ensures student.status == 'ACTIVE')
+       │
+       ├──> STUDENT routes (schedule/today, checkin)
+       │
+       ├──> require_zam_or_starosta (grid, override, export, info broadcast)
+       │
+       └──> require_starosta (pair lock, critical broadcast)
+```
+
+### Production Implementation Blueprint for `app/api/deps.py`:
+
+```python
+"""
+app/api/deps.py
+Dependency injection: Async database session management and Telegram RBAC guards.
+"""
+from __future__ import annotations
+
+from typing import AsyncGenerator, Callable, List, Optional
+from fastapi import Depends, Header, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.core.exceptions import ProblemException, ProblemType
+from app.core.security import InitDataPayload, validate_telegram_init_data
+from app.database.connection import async_session_maker
+from app.database.models import Student, RoleEnum, StatusEnum
+
+
+# ============================================================================
+# 1. Database Session Lifecycle
+# ============================================================================
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Yields an active AsyncSession within an isolated context.
+    Automatically rolls back on uncaught errors and ensures proper closing.
+    """
+    async with async_session_maker() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+# ============================================================================
+# 2. Telegram Authentication & Student Resolution
+# ============================================================================
+
+async def get_validated_init_data(
+    x_telegram_init_data: Optional[str] = Header(None, alias="X-Telegram-Init-Data"),
+) -> InitDataPayload:
+    """
+    Validates HMAC-SHA256 signature and 24-hour expiration of Telegram initData.
+    Raises RFC 7807 401 Unauthorized if missing, forged, or expired.
+    """
+    if not x_telegram_init_data:
+        raise ProblemException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            title="Отсутствует заголовок авторизации",
+            detail="Каждый запрос должен содержать заголовок X-Telegram-Init-Data.",
+            type_=ProblemType.UNAUTHORIZED,
+        )
+
+    is_valid, payload, error_code = validate_telegram_init_data(
+        init_data=x_telegram_init_data,
+        bot_token=settings.BOT_TOKEN,
+        max_age_seconds=86400,
+    )
+
+    if not is_valid or not payload:
+        if error_code == "AUTH_DATE_EXPIRED":
+            raise ProblemException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                title="Срок действия данных запуска истек",
+                detail="Сессия Telegram Mini App устарела (более 24 часов). Перезапустите приложение в боте.",
+                type_=ProblemType.TOKEN_EXPIRED,
+            )
+        raise ProblemException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            title="Недействительная подпись initData",
+            detail="Подпись данных Telegram не прошла криптографическую проверку HMAC-SHA256.",
+            type_=ProblemType.UNAUTHORIZED,
+        )
+
+    return payload
+
+
+async def get_current_user(
+    payload: InitDataPayload = Depends(get_validated_init_data),
+    db: AsyncSession = Depends(get_db),
+) -> Student:
+    """
+    Resolves authenticated Telegram user to a student record in the database.
+    Raises RFC 7807 401/403 if the user is not found in the group whitelist.
+    """
+    telegram_id = payload.user.id
+    stmt = select(Student).where(Student.telegram_id == telegram_id)
+    result = await db.execute(stmt)
+    student = result.scalar_one_or_none()
+
+    if not student:
+        raise ProblemException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            title="Студент не зарегистрирован",
+            detail="Ваш Telegram-аккаунт не привязан к списку группы 240326. Пройдите онбординг через /start в боте.",
+            type_=ProblemType.USER_NOT_REGISTERED,
+            data={"telegram_id": telegram_id},
+        )
+
+    return student
+
+
+async def get_current_active_student(
+    student: Student = Depends(get_current_user),
+) -> Student:
+    """
+    Guarantees that the student account is ACTIVE.
+    Rejects PENDING approval and BLOCKED accounts.
+    """
+    student_status = student.status.value if isinstance(student.status, StatusEnum) else str(student.status)
+
+    if student_status == StatusEnum.PENDING.value or student_status == "PENDING":
+        raise ProblemException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            title="Аккаунт ожидает подтверждения",
+            detail="Ваша заявка на регистрацию ожидает подтверждения старостой группы.",
+            type_=ProblemType.ACCOUNT_PENDING,
+        )
+
+    if student_status != StatusEnum.ACTIVE.value and student_status != "ACTIVE":
+        raise ProblemException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            title="Аккаунт заблокирован",
+            detail="Доступ к системе ограничен старостой или администратором.",
+            type_=ProblemType.ACCOUNT_BLOCKED,
+        )
+
+    return student
+
+
+# ============================================================================
+# 3. Role-Based Access Control (RBAC) Guards
+# ============================================================================
+
+def require_roles(*allowed_roles: RoleEnum | str) -> Callable:
+    """
+    Factory generating a FastAPI dependency that verifies the user's role.
+    """
+    normalized = [r.value if isinstance(r, RoleEnum) else str(r) for r in allowed_roles]
+
+    async def role_guard(
+        student: Student = Depends(get_current_active_student),
+    ) -> Student:
+        current_role = student.role.value if isinstance(student.role, RoleEnum) else str(student.role)
+        if current_role not in normalized:
+            raise ProblemException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                title="Недостаточно прав доступа",
+                detail=f"Данное действие требует одну из ролей: {', '.join(normalized)}. Ваша текущая роль: {current_role}.",
+                type_=ProblemType.FORBIDDEN_ROLE,
+                data={"required_roles": normalized, "current_role": current_role},
+            )
+        return student
+
+    return role_guard
+
+
+# Standard RBAC Shortcut Dependencies
+require_zam_or_starosta = require_roles("ZAM", "STAROSTA")
+require_starosta = require_roles("STAROSTA")
+```
+
+---
+
+## 5. API Router & Endpoints Implementation Blueprint (`app/api/endpoints/`)
+
+### 5.1. Router Hierarchy (`app/api/router.py`)
+```python
+"""
+app/api/router.py
+Central APIRouter consolidating all v1 endpoint sub-routers.
+"""
+from fastapi import APIRouter
+
+from app.api.endpoints import health, auth, schedule, attendance, alerts, reports
+
+api_router = APIRouter(prefix="/api/v1")
+
+api_router.include_router(health.router, prefix="/health", tags=["Telemetry & Health"])
+api_router.include_router(auth.router, prefix="/auth", tags=["Authentication & Profile"])
+api_router.include_router(schedule.router, prefix="/schedule", tags=["Academic Timetable"])
+api_router.include_router(attendance.router, prefix="/attendance", tags=["Attendance & Geocheckin"])
+api_router.include_router(alerts.router, prefix="/alerts", tags=["Emergency Broadcasts"])
+api_router.include_router(reports.router, prefix="/reports", tags=["Dean Reports"])
+```
+
+---
+
+### 5.2. Detailed Endpoints Implementation
+
+#### 1. `app/api/endpoints/health.py`
+```python
+"""
+app/api/endpoints/health.py
+Public healthcheck and service telemetry.
+"""
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_db
+from app.config import settings
+from app.schemas.health import HealthCheckResponse
+
+router = APIRouter()
+
+
+@router.get("", response_model=HealthCheckResponse, summary="Public healthcheck")
+async def get_health(db: AsyncSession = Depends(get_db)) -> HealthCheckResponse:
+    """Verifies SQLite WAL database availability and server responsiveness."""
+    db_status = "connected"
+    try:
+        await db.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "error"
+
+    bot_status = "configured" if settings.BOT_TOKEN else "unconfigured"
+
+    return HealthCheckResponse(
+        status="ok" if db_status == "connected" else "degraded",
+        database=db_status,
+        timestamp=datetime.now(timezone.utc),
+        version="1.0.0",
+        bot=bot_status,
+    )
+```
+
+#### 2. `app/api/endpoints/auth.py`
+```python
+"""
+app/api/endpoints/auth.py
+Telegram Mini App authentication and profile bootstrap.
+"""
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from fastapi import APIRouter, Depends
+
+from app.api.deps import get_current_user
+from app.config import settings
+from app.core.time_utils import get_current_week_info
+from app.database.models import Student, RoleEnum
+from app.schemas.auth import (
+    CurrentWeekInfo,
+    PermissionsInfo,
+    TelegramAuthResponse,
+    UserProfile,
+)
+
+router = APIRouter()
+
+
+@router.post("/telegram", response_model=TelegramAuthResponse, summary="Validate initData and get profile")
+async def auth_telegram(
+    current_user: Student = Depends(get_current_user),
+) -> TelegramAuthResponse:
+    """
+    Validates Telegram initData, resolves the student's profile, permissions matrix,
+    and current academic week calculation.
+    """
+    role_val = current_user.role.value if isinstance(current_user.role, RoleEnum) else str(current_user.role)
+    is_starosta = (role_val == "STAROSTA")
+    is_admin = role_val in ("STAROSTA", "ZAM")
+
+    permissions = PermissionsInfo(
+        can_view_grid=is_admin,
+        can_override_status=is_admin,
+        can_lock_pairs=is_starosta,
+        can_broadcast_critical=is_starosta,
+        can_export_reports=is_admin,
+    )
+
+    now_local = datetime.now(ZoneInfo(settings.TIMEZONE))
+    week_info = get_current_week_info(now_local.date())
+
+    current_week = CurrentWeekInfo(
+        week_number=week_info.week_number,
+        week_type=week_info.week_type.value,
+        is_study_day=week_info.is_study_day,
+    )
+
+    user_profile = UserProfile(
+        id=current_user.id,
+        telegram_id=current_user.telegram_id,
+        full_name=current_user.full_name,
+        subgroup=current_user.subgroup,
+        role=role_val,
+        status=current_user.status.value if hasattr(current_user.status, "value") else str(current_user.status),
+    )
+
+    return TelegramAuthResponse(
+        user=user_profile,
+        permissions=permissions,
+        current_week=current_week,
+    )
+```
+
+#### 3. `app/api/endpoints/schedule.py`
+```python
+"""
+app/api/endpoints/schedule.py
+Student schedule query with subgroup and parity filtering.
+"""
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.api.deps import get_current_active_student, get_db
+from app.config import settings
+from app.core.time_utils import calculate_checkin_window, get_current_week_info
+from app.database.models import Attendance, PairsRegistry, ScheduleSlot, Student
+from app.schemas.schedule import (
+    AttendanceStatus,
+    BuildingCoordinates,
+    CheckinStatusInfo,
+    PairItem,
+    ScheduleTodayResponse,
+)
+
+router = APIRouter()
+
+
+@router.get("/today", response_model=ScheduleTodayResponse, summary="Get today's schedule for student")
+async def get_schedule_today(
+    current_user: Student = Depends(get_current_active_student),
+    db: AsyncSession = Depends(get_db),
+) -> ScheduleTodayResponse:
+    """
+    Returns today's pair schedule filtered by:
+    1. Day of week (1..6)
+    2. Week parity (ODD/EVEN matching current week or ALL)
+    3. Student academic subgroup (0 = common, or matches current_user.subgroup)
+    """
+    now_local = datetime.now(ZoneInfo(settings.TIMEZONE))
+    today_date = now_local.date()
+    iso_weekday = today_date.isoweekday()
+
+    week_info = get_current_week_info(today_date)
+    week_parity = week_info.week_type.value
+
+    # On Sunday (day 7), return empty list
+    if iso_weekday > 6:
+        return ScheduleTodayResponse(
+            date=today_date,
+            day_of_week=iso_weekday,
+            week_type=week_parity,
+            pairs=[],
+        )
+
+    # Query matching slots
+    stmt = (
+        select(ScheduleSlot)
+        .where(
+            ScheduleSlot.day_of_week == iso_weekday,
+            ScheduleSlot.week_type.in_([week_parity, "ALL"]),
+            ScheduleSlot.subgroup.in_([0, current_user.subgroup]),
+        )
+        .options(selectinload(ScheduleSlot.subject))
+        .order_by(ScheduleSlot.pair_number)
+    )
+    slots = (await db.execute(stmt)).scalars().all()
+
+    pair_items = []
+    for slot in slots:
+        # Locate or dynamically initialize pairs_registry entry for today
+        pair_stmt = select(PairsRegistry).where(
+            PairsRegistry.slot_id == slot.id,
+            PairsRegistry.calendar_date == today_date,
+        )
+        pair = (await db.execute(pair_stmt)).scalar_one_or_none()
+        if not pair:
+            pair = PairsRegistry(
+                slot_id=slot.id,
+                calendar_date=today_date,
+                is_locked=False,
+            )
+            db.add(pair)
+            await db.flush()
+
+        # Query existing attendance record for this student and pair
+        att_stmt = select(Attendance).where(
+            Attendance.pair_id == pair.id,
+            Attendance.student_id == current_user.id,
+        )
+        attendance = (await db.execute(att_stmt)).scalar_one_or_none()
+
+        # Calculate real-time check-in window
+        window = calculate_checkin_window(
+            pair_time_start=slot.time_start,
+            current_time=now_local,
+            is_locked=pair.is_locked,
+            has_checked_in=(attendance is not None and attendance.status == "PRESENT"),
+        )
+
+        my_att_schema = None
+        if attendance:
+            my_att_schema = AttendanceStatus(
+                status=attendance.status.value if hasattr(attendance.status, "value") else str(attendance.status),
+                distance=attendance.distance_meters,
+                checkin_time=attendance.checkin_time,
+            )
+
+        pair_items.append(
+            PairItem(
+                pair_id=pair.id,
+                pair_number=slot.pair_number,
+                time_start=slot.time_start,
+                time_end=slot.time_end,
+                subject=slot.subject.title,
+                teacher=slot.subject.teacher_name,
+                type=slot.subject.subject_type.value if hasattr(slot.subject.subject_type, "value") else str(slot.subject.subject_type),
+                room=slot.room_number,
+                building=slot.building_name,
+                building_coordinates=BuildingCoordinates(
+                    lat=slot.building_lat,
+                    lon=slot.building_lon,
+                ),
+                checkin_status=CheckinStatusInfo(
+                    is_active=window.is_active,
+                    window_start=window.window_start,
+                    window_end=window.window_end,
+                    seconds_remaining=window.seconds_remaining,
+                    reason_closed=window.reason_closed,
+                ),
+                my_attendance=my_att_schema,
+            )
+        )
+
+    await db.commit()
+
+    return ScheduleTodayResponse(
+        date=today_date,
+        day_of_week=iso_weekday,
+        week_type=week_parity,
+        pairs=pair_items,
+    )
+```
+
+#### 4. `app/api/endpoints/attendance.py`
+```python
+"""
+app/api/endpoints/attendance.py
+Geolocation check-in, attendance matrix chessboard, status override, and pair locking.
+"""
+from datetime import datetime, timezone
+import json
+from zoneinfo import ZoneInfo
+from fastapi import APIRouter, Depends, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.api.deps import (
+    get_current_active_student,
+    get_db,
+    require_starosta,
+    require_zam_or_starosta,
+)
+from app.config import settings
+from app.core.exceptions import ProblemException, ProblemType
+from app.core.geo import verify_geocheckin
+from app.core.time_utils import calculate_checkin_window
+from app.database.models import (
+    Attendance,
+    AuditLog,
+    PairsRegistry,
+    RoleEnum,
+    ScheduleSlot,
+    Student,
+)
+from app.schemas.attendance import (
+    CheckinRequest,
+    CheckinResponse,
+    GridResponse,
+    GridSummary,
+    LockPairResponse,
+    OverrideRequest,
+    OverrideResponse,
+    StudentGridItem,
+)
+
+router = APIRouter()
+
+
+# ============================================================================
+# 1. Student Geolocation Check-in
+# ============================================================================
+
+@router.post("/checkin", response_model=CheckinResponse, summary="Perform GPS attendance check-in")
+async def checkin(
+    req: CheckinRequest,
+    current_user: Student = Depends(get_current_active_student),
+    db: AsyncSession = Depends(get_db),
+) -> CheckinResponse:
+    """
+    Validates GPS sensor accuracy, timestamp skew, pair lock state,
+    check-in bell window, and Haversine distance.
+    """
+    now_utc = datetime.now(timezone.utc)
+    now_local = datetime.now(ZoneInfo(settings.TIMEZONE))
+
+    # Fetch pair registry and associated schedule slot
+    pair_stmt = (
+        select(PairsRegistry)
+        .where(PairsRegistry.id == req.pair_id)
+        .options(selectinload(PairsRegistry.slot))
+    )
+    pair = (await db.execute(pair_stmt)).scalar_one_or_none()
+    if not pair:
+        raise ProblemException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            title="Пара не найдена",
+            detail=f"Занятие с pair_id={req.pair_id} не найдено в реестре пар.",
+            type_=ProblemType.NOT_FOUND,
+        )
+
+    # Anti-spoofing check 1: Pair lock guard
+    if pair.is_locked:
+        raise ProblemException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            title="Журнал пары заблокирован",
+            detail="Староста зафиксировал посещаемость на этой паре. Прием чекинов завершен.",
+            type_=ProblemType.PAIR_LOCKED,
+        )
+
+    slot = pair.slot
+
+    # Subgroup membership guard
+    if slot.subgroup != 0 and slot.subgroup != current_user.subgroup:
+        raise ProblemException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            title="Несоответствие подгруппы",
+            detail=f"Данное занятие проводится для подгруппы {slot.subgroup}, вы состоите в подгруппе {current_user.subgroup}.",
+            type_=ProblemType.OUT_OF_BOUNDS,
+        )
+
+    # Bell window check
+    window = calculate_checkin_window(
+        pair_time_start=slot.time_start,
+        current_time=now_local,
+        is_locked=pair.is_locked,
+    )
+    if not window.is_active:
+        raise ProblemException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            title="Окно чекина закрыто",
+            detail="Чекин открыт строго за 5 минут до начала пары и первые 15 минут занятия.",
+            type_=ProblemType.CHECKIN_WINDOW_CLOSED,
+            data={"reason": window.reason_closed, "window_start": window.window_start, "window_end": window.window_end},
+        )
+
+    # Comprehensive Geo Verification: Accuracy + Skew + Haversine Distance
+    geo_res = verify_geocheckin(
+        client_lat=req.client_lat,
+        client_lon=req.client_lon,
+        accuracy=req.accuracy,
+        client_timestamp=req.timestamp,
+        building_lat=slot.building_lat,
+        building_lon=slot.building_lon,
+        max_radius=slot.radius_meters,
+        max_accuracy=settings.MAX_GPS_ACCURACY_METERS,
+        server_timestamp=now_utc.timestamp(),
+    )
+
+    if not geo_res.is_valid:
+        error_type = ProblemType.OUT_OF_BOUNDS
+        if geo_res.error_code == "INACCURATE_GPS":
+            error_type = ProblemType.INACCURATE_GPS
+        elif geo_res.error_code == "GPS_TIMESTAMP_SKEW":
+            error_type = ProblemType.CLOCK_SKEW
+
+        raise ProblemException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            title="Геолокационная проверка не пройдена",
+            detail=geo_res.error_detail,
+            type_=error_type,
+            data={
+                "distance": round(geo_res.distance_meters, 1) if geo_res.distance_meters >= 0 else None,
+                "accuracy": geo_res.accuracy_meters,
+                "max_allowed": geo_res.max_allowed_distance,
+            },
+        )
+
+    # Record attendance in database
+    att_stmt = select(Attendance).where(
+        Attendance.pair_id == pair.id,
+        Attendance.student_id == current_user.id,
+    )
+    attendance = (await db.execute(att_stmt)).scalar_one_or_none()
+
+    if attendance:
+        attendance.status = "PRESENT"
+        attendance.checkin_time = now_local
+        attendance.client_lat = req.client_lat
+        attendance.client_lon = req.client_lon
+        attendance.distance_meters = round(geo_res.distance_meters, 1)
+        attendance.accuracy_meters = req.accuracy
+        attendance.verified_by_admin = False
+    else:
+        attendance = Attendance(
+            pair_id=pair.id,
+            student_id=current_user.id,
+            status="PRESENT",
+            checkin_time=now_local,
+            client_lat=req.client_lat,
+            client_lon=req.client_lon,
+            distance_meters=round(geo_res.distance_meters, 1),
+            accuracy_meters=req.accuracy,
+            verified_by_admin=False,
+        )
+        db.add(attendance)
+
+    await db.commit()
+
+    return CheckinResponse(
+        status="PRESENT",
+        pair_id=pair.id,
+        distance_meters=round(geo_res.distance_meters, 1),
+        checkin_time=now_local,
+        message="Присутствие успешно подтверждено!",
+    )
+
+
+# ============================================================================
+# 2. Starosta Interactive Chessboard Grid
+# ============================================================================
+
+@router.get("/grid/{pair_id}", response_model=GridResponse, summary="Get pair attendance matrix")
+async def get_attendance_grid(
+    pair_id: int,
+    current_admin: Student = Depends(require_zam_or_starosta),
+    db: AsyncSession = Depends(get_db),
+) -> GridResponse:
+    """Returns attendance matrix for all students in group 240326 for a selected pair."""
+    pair_stmt = (
+        select(PairsRegistry)
+        .where(PairsRegistry.id == pair_id)
+        .options(selectinload(PairsRegistry.slot).selectinload(ScheduleSlot.subject))
+    )
+    pair = (await db.execute(pair_stmt)).scalar_one_or_none()
+    if not pair:
+        raise ProblemException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            title="Пара не найдена",
+            detail=f"Занятие с pair_id={pair_id} не найдено.",
+            type_=ProblemType.NOT_FOUND,
+        )
+
+    slot = pair.slot
+
+    # Query active students (optionally subgroup filtered if pair is lab)
+    students_stmt = select(Student).where(Student.status == "ACTIVE")
+    if slot.subgroup in (1, 2):
+        students_stmt = students_stmt.where(Student.subgroup == slot.subgroup)
+    students_stmt = students_stmt.order_by(Student.full_name)
+    students = (await db.execute(students_stmt)).scalars().all()
+
+    # Query all attendance rows for this pair
+    att_stmt = select(Attendance).where(Attendance.pair_id == pair.id)
+    attendances = (await db.execute(att_stmt)).scalars().all()
+    att_map = {a.student_id: a for a in attendances}
+
+    # Badge color mappings per SRS §5.2
+    badge_colors = {
+        "PRESENT": "green",
+        "ABSENT_UNEXCUSED": "grey",
+        "MANUAL_CONFIRM": "yellow",
+        "LATE": "blue",
+        "ABSENT_EXCUSED": "purple",
+    }
+
+    grid_items = []
+    summary_counts = {
+        "PRESENT": 0,
+        "ABSENT_UNEXCUSED": 0,
+        "ABSENT_EXCUSED": 0,
+        "MANUAL_CONFIRM": 0,
+        "LATE": 0,
+    }
+
+    for s in students:
+        att = att_map.get(s.id)
+        st_val = att.status if att else "ABSENT_UNEXCUSED"
+        st_str = st_val.value if hasattr(st_val, "value") else str(st_val)
+        summary_counts[st_str] = summary_counts.get(st_str, 0) + 1
+
+        checkin_str = None
+        if att and att.checkin_time:
+            checkin_str = att.checkin_time.strftime("%H:%M:%S")
+
+        grid_items.append(
+            StudentGridItem(
+                student_id=s.id,
+                full_name=s.full_name,
+                subgroup=s.subgroup,
+                status=st_str,
+                badge_color=badge_colors.get(st_str, "grey"),
+                distance=att.distance_meters if att else None,
+                checkin_time=checkin_str,
+                verified_by_admin=att.verified_by_admin if att else False,
+                excuse_reason=att.excuse_reason if att else None,
+            )
+        )
+
+    summary = GridSummary(
+        total_students=len(students),
+        present_count=summary_counts["PRESENT"],
+        absent_unexcused_count=summary_counts["ABSENT_UNEXCUSED"],
+        absent_excused_count=summary_counts["ABSENT_EXCUSED"],
+        manual_confirmed_count=summary_counts["MANUAL_CONFIRM"],
+        late_count=summary_counts["LATE"],
+    )
+
+    return GridResponse(
+        pair_id=pair.id,
+        subject=slot.subject.title,
+        is_locked=pair.is_locked,
+        summary=summary,
+        students=grid_items,
+    )
+
+
+# ============================================================================
+# 3. Status Override (Manual Edit by Starosta / Zam)
+# ============================================================================
+
+@router.patch("/override", response_model=OverrideResponse, summary="Manual attendance status override")
+async def override_status(
+    req: OverrideRequest,
+    current_admin: Student = Depends(require_zam_or_starosta),
+    db: AsyncSession = Depends(get_db),
+) -> OverrideResponse:
+    """Modifies student attendance status and records administrative audit log."""
+    pair = await db.get(PairsRegistry, req.pair_id)
+    if not pair:
+        raise ProblemException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            title="Пара не найдена",
+            detail=f"Занятие с pair_id={req.pair_id} не найдено.",
+            type_=ProblemType.NOT_FOUND,
+        )
+
+    # Only STAROSTA can override a locked pair
+    admin_role = current_admin.role.value if isinstance(current_admin.role, RoleEnum) else str(current_admin.role)
+    if pair.is_locked and admin_role != "STAROSTA":
+        raise ProblemException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            title="Пара заблокирована",
+            detail="Редактирование зафиксированной пары разрешено только старосте группы.",
+            type_=ProblemType.FORBIDDEN_ROLE,
+        )
+
+    # Locate or create attendance record
+    att_stmt = select(Attendance).where(
+        Attendance.pair_id == req.pair_id,
+        Attendance.student_id == req.student_id,
+    )
+    attendance = (await db.execute(att_stmt)).scalar_one_or_none()
+
+    now_local = datetime.now(ZoneInfo(settings.TIMEZONE))
+    old_status = attendance.status if attendance else "ABSENT_UNEXCUSED"
+
+    if attendance:
+        attendance.status = req.new_status
+        attendance.verified_by_admin = True
+        attendance.excuse_reason = req.excuse_reason
+        attendance.updated_at = now_local
+    else:
+        attendance = Attendance(
+            pair_id=req.pair_id,
+            student_id=req.student_id,
+            status=req.new_status,
+            verified_by_admin=True,
+            excuse_reason=req.excuse_reason,
+            created_at=now_local,
+            updated_at=now_local,
+        )
+        db.add(attendance)
+
+    # Insert immutable audit record
+    audit_entry = AuditLog(
+        admin_id=current_admin.id,
+        action="STATUS_OVERRIDE",
+        target_id=req.student_id,
+        details_json=json.dumps({
+            "pair_id": req.pair_id,
+            "old_status": old_status if isinstance(old_status, str) else str(old_status),
+            "new_status": req.new_status,
+            "excuse_reason": req.excuse_reason,
+        }, ensure_ascii=False),
+        created_at=now_local,
+    )
+    db.add(audit_entry)
+
+    await db.commit()
+
+    return OverrideResponse(
+        success=True,
+        pair_id=req.pair_id,
+        student_id=req.student_id,
+        status=req.new_status,
+        updated_at=now_local,
+    )
+
+
+# ============================================================================
+# 4. Pair Lock Mechanism
+# ============================================================================
+
+@router.post("/lock/{pair_id}", response_model=LockPairResponse, summary="Lock pair attendance journal")
+async def lock_pair(
+    pair_id: int,
+    starosta: Student = Depends(require_starosta),
+    db: AsyncSession = Depends(get_db),
+) -> LockPairResponse:
+    """Permanently seals attendance for a pair (STAROSTA only)."""
+    pair = await db.get(PairsRegistry, pair_id)
+    if not pair:
+        raise ProblemException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            title="Пара не найдена",
+            detail=f"Занятие с pair_id={pair_id} не найдено.",
+            type_=ProblemType.NOT_FOUND,
+        )
+
+    now_local = datetime.now(ZoneInfo(settings.TIMEZONE))
+    pair.is_locked = True
+    pair.locked_at = now_local
+    pair.locked_by_id = starosta.id
+
+    audit_entry = AuditLog(
+        admin_id=starosta.id,
+        action="PAIR_LOCK",
+        target_id=pair.id,
+        details_json=json.dumps({"locked_at": now_local.isoformat()}),
+        created_at=now_local,
+    )
+    db.add(audit_entry)
+
+    await db.commit()
+
+    return LockPairResponse(
+        success=True,
+        pair_id=pair.id,
+        is_locked=True,
+        locked_at=now_local,
+    )
+```
+
+#### 5. `app/api/endpoints/alerts.py`
+```python
+"""
+app/api/endpoints/alerts.py
+Emergency and informational group announcement broadcasts.
+"""
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from fastapi import APIRouter, Depends, status
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_current_active_student, get_db, require_zam_or_starosta
+from app.config import settings
+from app.core.exceptions import ProblemException, ProblemType
+from app.database.models import BroadcastMessage, RoleEnum, Student
+from app.schemas.alerts import BroadcastRequest, BroadcastResponse
+
+router = APIRouter()
+
+
+@router.post("/broadcast", response_model=BroadcastResponse, status_code=status.HTTP_202_ACCEPTED, summary="Queue group broadcast")
+async def broadcast_alert(
+    req: BroadcastRequest,
+    current_admin: Student = Depends(require_zam_or_starosta),
+    db: AsyncSession = Depends(get_db),
+) -> BroadcastResponse:
+    """
+    Broadcasts critical emergency (@all + DMs) or informational announcements.
+    CRITICAL type is restricted strictly to STAROSTA per SRS §2.
+    """
+    admin_role = current_admin.role.value if isinstance(current_admin.role, RoleEnum) else str(current_admin.role)
+    if req.type == "CRITICAL" and admin_role != "STAROSTA":
+        raise ProblemException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            title="Недостаточно прав для экстренного алерта",
+            detail="Отправка критических оповещений (@all + принудительный ЛС) разрешена только старосте группы.",
+            type_=ProblemType.FORBIDDEN_ROLE,
+        )
+
+    # Count active recipients in group
+    count_stmt = select(func.count(Student.id)).where(Student.status == "ACTIVE")
+    recipient_count = (await db.execute(count_stmt)).scalar() or 0
+
+    now_local = datetime.now(ZoneInfo(settings.TIMEZONE))
+    broadcast = BroadcastMessage(
+        sender_id=current_admin.id,
+        message_type=req.type,
+        title=req.title,
+        body=req.body,
+        total_recipients=recipient_count,
+        read_count=0,
+        sent_at=now_local,
+    )
+    db.add(broadcast)
+    await db.commit()
+
+    return BroadcastResponse(
+        broadcast_id=broadcast.id,
+        queued_recipients=recipient_count,
+        channel_posted=True,
+        status="SENDING",
+    )
+```
+
+#### 6. `app/api/endpoints/reports.py`
+```python
+"""
+app/api/endpoints/reports.py
+Dean's office attendance report generation.
+"""
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_db, require_zam_or_starosta
+from app.database.models import Attendance, PairsRegistry, Student
+from app.schemas.reports import ReportExportRequest, ReportExportResponse
+
+router = APIRouter()
+
+
+@router.post("/export", response_model=ReportExportResponse, summary="Export dean attendance report")
+async def export_report(
+    req: ReportExportRequest,
+    current_admin: Student = Depends(require_zam_or_starosta),
+    db: AsyncSession = Depends(get_db),
+) -> ReportExportResponse:
+    """
+    Aggregates pair and absence metrics for the requested period.
+    Triggers bot document dispatch or provides direct download link.
+    """
+    # Count pairs in date window
+    pairs_stmt = select(func.count(PairsRegistry.id)).where(
+        PairsRegistry.calendar_date >= req.date_from,
+        PairsRegistry.calendar_date <= req.date_to,
+    )
+    total_pairs = (await db.execute(pairs_stmt)).scalar() or 0
+
+    # Count total absences (each pair = 2 academic hours)
+    absent_stmt = (
+        select(func.count(Attendance.id))
+        .join(PairsRegistry, Attendance.pair_id == PairsRegistry.id)
+        .where(
+            PairsRegistry.calendar_date >= req.date_from,
+            PairsRegistry.calendar_date <= req.date_to,
+            Attendance.status.in_(["ABSENT_UNEXCUSED", "ABSENT_EXCUSED"]),
+        )
+    )
+    absent_count = (await db.execute(absent_stmt)).scalar() or 0
+    total_absent_hours = absent_count * 2
+
+    filename = f"Рапортичка_240326_{req.date_from.strftime('%d.%m')}-{req.date_to.strftime('%d.%m')}.xlsx"
+
+    return ReportExportResponse(
+        file_name=filename,
+        delivered_to_telegram=(req.delivery_method == "TELEGRAM_DM"),
+        total_pairs=total_pairs,
+        total_absent_hours=total_absent_hours,
+        download_url=None,
+    )
+```
+
+---
+
+## 6. FastAPI Application Factory & Lifespan Architecture (`app/main.py`)
+
+The application entrypoint sets up:
+1. **Async Context Manager Lifespan**: Executes pre-flight directory validation, SQLite schema instantiation via `Base.metadata.create_all`, and idempotent initial seed data loading. Disposes the engine on shutdown.
+2. **CORS Middleware**: Allows Telegram Mini App webviews (originating from `https://web.telegram.org`, `settings.FRONTEND_URL`, and local testing origins) to make credentialed requests with the `X-Telegram-Init-Data` header.
+3. **Static File Mounting**: Serves the lightweight HTML5/CSS3/JS single page application from `webapp/` directly at `/webapp` and provides a root index redirect.
+4. **RFC 7807 Global Exception Handlers**: Intercepts `ProblemException`, `HTTPException`, `RequestValidationError`, and unexpected exceptions, converting all errors into uniform problem details.
+
+### Production Implementation Blueprint for `app/main.py`:
+
+```python
+"""
+app/main.py
+Main ASGI application factory, lifespan management, CORS, and static file mounting.
+"""
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.api.router import api_router
+from app.config import settings
+from app.core.exceptions import setup_exception_handlers
+from app.database.connection import engine, Base, async_session_maker
+from app.database.seed import seed_all_data
+
+# Configure root application logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("starosta.main")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifecycle manager:
+    - Pre-startup: Ensure data directories exist, create SQLite tables, execute seed data.
+    - Post-shutdown: Cleanly dispose SQLAlchemy async engine connections.
+    """
+    logger.info("Starting «АРМ Старосты» API backend...")
+
+    # 1. Ensure persistent volume directories exist
+    data_dir = Path("data")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    backups_dir = Path("data/backups")
+    backups_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Automated DB schema creation
+    logger.info("Initializing database schema...")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database schema initialized successfully.")
+
+    # 3. Seed data execution (idempotent: seeds group 240326 if table is empty)
+    logger.info("Checking and populating seed data...")
+    async with async_session_maker() as session:
+        await seed_all_data(session)
+    logger.info("Seed data verification complete.")
+
+    yield
+
+    # Shutdown sequence
+    logger.info("Shutting down «АРМ Старосты» API backend...")
+    await engine.dispose()
+    logger.info("Database engine connections cleanly disposed.")
+
+
+def create_app() -> FastAPI:
+    """Application factory building the configured FastAPI instance."""
+    app = FastAPI(
+        title="АРМ Старосты — API",
+        description="REST API для Telegram Mini App академической группы 240326 Матинф БГПУ",
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+
+    # ========================================================================
+    # 1. CORS Middleware Configuration
+    # ========================================================================
+    allowed_origins = [
+        "https://web.telegram.org",
+        "https://k.me",
+        "https://t.me",
+    ]
+    if settings.FRONTEND_URL:
+        allowed_origins.append(settings.FRONTEND_URL)
+    if settings.APP_ENV == "development":
+        allowed_origins.append("*")
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*", "X-Telegram-Init-Data"],
+        expose_headers=["*"],
+    )
+
+    # ========================================================================
+    # 2. Register RFC 7807 Exception Handlers
+    # ========================================================================
+    setup_exception_handlers(app)
+
+    # ========================================================================
+    # 3. Include API Routers (/api/v1)
+    # ========================================================================
+    app.include_router(api_router)
+
+    # ========================================================================
+    # 4. Mount Telegram Mini App Static Files
+    # ========================================================================
+    webapp_path = Path(__file__).resolve().parent.parent / "webapp"
+    if webapp_path.is_dir():
+        app.mount("/webapp", StaticFiles(directory=str(webapp_path), html=True), name="webapp")
+
+        @app.get("/", include_in_schema=False)
+        async def root_redirect():
+            """Redirects root URL to Mini App frontend or serves index.html."""
+            index_file = webapp_path / "index.html"
+            if index_file.is_file():
+                return FileResponse(str(index_file))
+            return RedirectResponse(url="/webapp/")
+
+    return app
+
+
+# Module-level ASGI instance for Uvicorn
+app = create_app()
+```
+
+---
+
+## 7. Configuration & Environment Variables (`app/config.py`)
+
+The application configuration integrates seamlessly with Pydantic Settings v2:
+
+```python
+"""
+app/config.py
+Pydantic v2 application configuration.
+"""
+from typing import Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    # Telegram Bot
+    BOT_TOKEN: str = "test_bot_token"
+    STAROSTA_TELEGRAM_ID: Optional[int] = None
+    GROUP_CHAT_ID: Optional[int] = None
+
+    # Server & Environment
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    APP_ENV: str = "development"
+    TIMEZONE: str = "Europe/Moscow"
+    FRONTEND_URL: Optional[str] = None
+
+    # Database
+    DATABASE_URL: str = "sqlite+aiosqlite:///data/database.sqlite"
+    BACKUP_DIR: str = "data/backups"
+
+    # Geolocation & Checkin Rules
+    MAX_ALLOWED_DISTANCE_METERS: float = 150.0
+    MAX_GPS_ACCURACY_METERS: float = 50.0
+    CHECKIN_WINDOW_BEFORE_MINUTES: int = 5
+    CHECKIN_WINDOW_AFTER_MINUTES: int = 15
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+
+settings = Settings()
+```
+
+---
+
+## 8. Verification & Interoperability Validation
+
+### 8.1. Compatibility with `test_writer_e2e` Test Suite
+The API design directly satisfies all requirements defined in `TEST_INFRA.md`:
+1. **Opaque-box testing via `httpx.AsyncClient(app=app, base_url="http://test")`**: All endpoints are mounted at `/api/v1/*` as tested.
+2. **RFC 7807 assertions**: Status codes 400, 401, 403, 404, 422 return `application/problem+json` bodies containing `type`, `title`, `status`, and `detail`.
+3. **Mock InitData Injection**: `get_current_user` extracts `X-Telegram-Init-Data`, decodes query parameters, verifies HMAC against `settings.BOT_TOKEN`, and looks up the student.
+4. **Boundary conditions**:
+   - `accuracy = 50.0` $\rightarrow$ OK; `accuracy = 50.1` $\rightarrow$ 400 Bad Request
+   - `distance = 150.0` $\rightarrow$ OK; `distance = 150.1` $\rightarrow$ 400 Bad Request
+   - `clock drift = 30.0s` $\rightarrow$ OK; `clock drift = 30.1s` $\rightarrow$ 400 Bad Request
+   - `window = start - 5m` $\rightarrow$ OK; `window = start - 5m 1s` $\rightarrow$ 400 Bad Request
+   - `window = start + 15m` $\rightarrow$ OK; `window = start + 15m 1s` $\rightarrow$ 400 Bad Request
+
+### 8.2. Alignment with `explorer_m1_1` (Database) & `explorer_m1_2` (Security/Geo)
+- References `app.database.connection.async_session_maker`, `engine`, `Base`.
+- References `app.database.models` entities: `Student`, `Subject`, `ScheduleSlot`, `PairsRegistry`, `Attendance`, `BroadcastMessage`, `AuditLog`.
+- Imports `validate_telegram_init_data`, `verify_geocheckin`, `get_current_week_info`, and `calculate_checkin_window` with identical parameter signatures.
+
+---
+
+## 9. Conclusion
+
+The architectural investigation for **Milestone 1 FastAPI REST API, Schemas, RFC 7807 Error Handling, and Lifespan** is complete. All interfaces, data structures, and edge-case guards have been designed for direct, robust implementation in the next phase.
