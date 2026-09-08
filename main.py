@@ -33,12 +33,14 @@ async def lifespan(app_instance: FastAPI):
         async def safe_polling():
             try:
                 bot = get_bot()
+                await bot.delete_webhook(drop_pending_updates=True)
                 dp = get_dispatcher()
                 logger.info("Запуск Telegram-бота в режиме Long Polling...")
                 await dp.start_polling(bot, handle_signals=False)
             except Exception as e:
-                logger.warning(f"Telegram-бот не подключен к серверам Telegram (для боевого режима укажите реальный BOT_TOKEN в .env): {e}")
+                logger.warning(f"Ошибка при работе Telegram-бота: {e}")
         polling_task = asyncio.create_task(safe_polling())
+
     else:
         try:
             bot = get_bot()
