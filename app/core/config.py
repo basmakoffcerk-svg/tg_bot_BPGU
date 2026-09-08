@@ -1,8 +1,18 @@
-"""
-Конфигурация приложения АРМ Старосты (Pydantic Settings).
-"""
 import os
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def get_default_database_url() -> str:
+    # 1. External Postgres / Neon
+    env_db = os.environ.get("POSTGRES_URL") or os.environ.get("POSTGRES_PRISMA_URL") or os.environ.get("DATABASE_URL")
+    if env_db:
+        return env_db
+    # 2. Vercel / Serverless -> /tmp (writable)
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return "sqlite+aiosqlite:////tmp/database.sqlite"
+    # 3. Local development
+    return "sqlite+aiosqlite:///data/database.sqlite"
 
 
 class Settings(BaseSettings):
@@ -23,12 +33,12 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     TIMEZONE: str = "Europe/Minsk"
     WEBHOOK_URL: str = ""
-    WEBHOOK_SECRET: str = "secret_webhook_token"
-    FRONTEND_URL: str = "http://localhost:8000"
+    WEBHOOK_SECRET: str = ""
+    FRONTEND_URL: str = "https://tg-bot-bpgu240326.vercel.app"
 
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///data/database.sqlite"
-    BACKUP_DIR: str = "data/backups"
+    DATABASE_URL: str = get_default_database_url()
+    BACKUP_DIR: str = "/tmp/backups" if os.environ.get("VERCEL") else "data/backups"
 
     # Geocheckin Parameters
     MAX_ALLOWED_DISTANCE_METERS: float = 150.0
@@ -38,3 +48,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

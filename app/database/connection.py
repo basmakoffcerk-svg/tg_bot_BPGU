@@ -24,8 +24,12 @@ if "sqlite" in settings.DATABASE_URL and ":///" in settings.DATABASE_URL:
     db_file_part = settings.DATABASE_URL.split(":///", 1)[1]
     if not db_file_part.startswith(":memory:"):
         db_path = Path(db_file_part)
-        if db_path.parent:
-            db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if db_path.parent:
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
 
 
 def configure_sqlite_pragmas(engine: AsyncEngine) -> None:
