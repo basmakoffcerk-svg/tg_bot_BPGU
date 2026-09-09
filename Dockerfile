@@ -1,29 +1,29 @@
-# Production Dockerfile for ARM Starosta
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Системные зависимости
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    build-essential \
     sqlite3 \
     tzdata \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Timezone configuration
 ENV TZ=Europe/Minsk
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
+# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application source code
 COPY . .
 
+# Ensure data directories exist
 RUN mkdir -p /app/data /app/data/backups
 
 EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
 CMD ["python", "main.py"]

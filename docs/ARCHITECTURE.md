@@ -160,6 +160,7 @@ import hmac
 import hashlib
 from urllib.parse import parse_qsl
 
+
 def validate_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
     """
     Валидация подлинности данных запуска WebApp по спецификации Telegram.
@@ -177,13 +178,13 @@ def validate_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
 
     # Сортировка параметров по ключам
     data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
-    
+
     # Генерация секретного ключа
     secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-    
+
     # Вычисление контрольного хэша
     calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-    
+
     if hmac.compare_digest(calculated_hash, received_hash):
         return parsed
     return None
@@ -199,11 +200,13 @@ async def get_current_user(x_telegram_init_data: str = Header(...)) -> User:
     # Проверка в БД и возврат User
     ...
 
+
 def require_roles(*allowed_roles: RoleEnum):
     async def role_checker(user: User = Depends(get_current_user)):
         if user.role not in allowed_roles:
             raise HTTPException(status_code=403, detail="Forbidden: Insufficient permissions")
         return user
+
     return role_checker
 ```
 

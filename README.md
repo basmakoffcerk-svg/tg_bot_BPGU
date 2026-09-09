@@ -1,83 +1,97 @@
-# 🎓 АРМ Старосты («Пульт управления группой 240326»)
+# 🎓 АРМ Старосты («Пульт управления группой 240326») — БГПУ им. М. Акмуллы
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg)](https://fastapi.tiangolo.com/)
-[![aiogram 3.x](https://img.shields.io/badge/aiogram-3.x-2CA5E0.svg)](https://docs.aiogram.dev/)
-[![Telegram Mini App](https://img.shields.io/badge/Telegram-Mini_App-blue.svg)](https://core.telegram.org/bots/webapps)
-[![Database](https://img.shields.io/badge/SQLite-WAL_Mode-003B57.svg)](https://www.sqlite.org/)
-[![Status](https://img.shields.io/badge/Specification-Approved-success.svg)](#)
+Полнофункциональный программный комплекс для академической группы **240326 «Матинф»** Института физики, математики, цифровых и нанотехнологий Башкирского государственного педагогического университета.
 
-> Централизованный командный комплекс для автоматизации учета посещаемости, исключения бумажной волокиты и регламентированного взаимодействия академической группы с деканатом.
-
----
-
-## 📌 Оглавление проектной документации
-
-Вся архитектура, технические спецификации и регламенты разделены по профильным разделам:
-
-* 📄 **[docs/SRS.md](docs/SRS.md)** — **Техническое задание (Software Requirements Specification)**:
-  * Назначение, бизнес-контекст и цели системы;
-  * Ролевая модель (RBAC: Студент, Замстаросты, Староста);
-  * Алгоритм геочекина по формуле гаверсинусов с фильтрацией погрешности GPS;
-  * Интерактивная шахматка старосты и механика запирания журнала;
-  * Требования к официальной рапортичке деканата и экстренным оповещениям.
-* 🏛️ **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — **Архитектура и системный дизайн**:
-  * C4 Container диаграмма взаимодействия компонентов;
-  * Sequence-диаграммы валидации `initData` (HMAC-SHA256) и процесса геочекина;
-  * Модель криптографической защиты и RBAC dependencies;
-  * Модульная структура репозитория.
-* 🗄️ **[docs/DATABASE.md](docs/DATABASE.md)** — **Спецификация базы данных (SQLite / SQLAlchemy 2.0)**:
-  * ERD-диаграмма связей сущностей;
-  * Готовые SQL DDL-схемы таблиц (`students`, `schedule_slots`, `pairs_registry`, `attendance`, `broadcast_messages`, `audit_log`);
-  * Оптимизация производительности SQLite (режим WAL, прагмы кэша);
-  * Регламент автоматического резервного копирования (Online Backup).
-* 🔌 **[docs/API.md](docs/API.md)** — **Спецификация REST API для Telegram Mini App**:
-  * Эндпоинты авторизации, получения расписания и фиксации геочекина;
-  * Административное API шахматки, ручного оверрайда и лок-механизма;
-  * Форматы ответов, коды ошибок (RFC 7807) и валидация.
-* 🚀 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — **Руководство по развертыванию**:
-  * Бесплатный/низкобюджетный стек: Vercel (TMA фронтенд) + Amvera Cloud / VPS (FastAPI + aiogram бэкенд);
-  * Настройка бота через BotFather (Menu Button, Webhooks);
-  * Шаблон переменных окружения `.env`;
-  * Инструкция по локальной разработке с пробросом портов (ngrok).
+Включает в себя:
+- **Telegram Bot (aiogram 3.x):** онбординг по предзагруженному вайтлисту, подтверждение старостой в 1 клик, рассылка экстренных алертов (@all + ЛС) и выдача ведомостей.
+- **FastAPI REST API:** высокопроизводительный асинхронный сервер с криптографической аутентификацией `initData` по алгоритму HMAC-SHA256 и ролевым контролем (RBAC).
+- **Telegram Mini App (TMA SPA):** мобильное веб-приложение (<50KB, 100/100 Lighthouse) с GPS-геочекином ($d \le 150$ м), обратным отсчетом окна отметки и интерактивной шахматкой старосты с быстрой сменой статусов.
+- **Официальный генератор рапортичек (openpyxl):** автоматическая сборка ведомостей деканата установленного образца с еженедельным субботним триггером (APScheduler).
+- **База данных SQLite (WAL Mode):** оптимизированные прагмы памяти (mmap, 64MB cache), устойчивость к взрывным нагрузкам одновременного чекина.
 
 ---
 
-## ⚙️ Технологический стек
+## 🚀 Быстрый запуск
 
-- **Backend:** Python 3.11+, FastAPI (REST API), aiogram 3.x (Telegram Bot Engine), APScheduler (фоновые задачи).
-- **ORM & Хранилище:** SQLAlchemy 2.0 (AsyncIO), aiosqlite, SQLite (WAL mode).
-- **Отчетность:** openpyxl (генератор ведомостей деканата `.xlsx`), ReportLab (PDF-экспорт).
-- **Frontend (TMA):** HTML5, CSS3 (переменные Telegram Theme), Vanilla JS, Telegram WebApp SDK, HTML5 Geolocation API.
-- **Инфраструктура:** Docker, Docker Compose, Vercel / GitHub Pages (Static TMA), Amvera Cloud / VPS (Backend).
+### 1. Локальный запуск
+```bash
+# Клонирование и переход в проект
+cd tg_bot
 
----
+# Создание виртуального окружения и установка зависимостей
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
 
-## 🎯 Ключевые возможности
+# Настройка переменных окружения
+cp .env.example .env
+# Отредактируйте .env (укажите BOT_TOKEN, STAROSTA_TELEGRAM_ID)
 
-1. **Гибридная рапортичка:**
-   * Студент отмечает присутствие одной кнопкой в окне пары (за 5 мин до начала и первые 15 мин).
-   * Координаты валидируются относительно эталона корпуса/аудитории ($d \le 150$ м) с отсечением неточного GPS ($\text{accuracy} \le 50$ м).
-2. **Шахматка старосты в реальном времени:**
-   * Наглядная цветовая индикация (🟢 Был, ⚪ Пропуск, 🟡 Подтвержден вручную, 🔵 Опоздал, 🟣 Уважительная причина).
-   * Одиночный тап для смены статуса, долгий тап для ввода номера справки или заявления.
-   * Фиксация пары («запирание»), исключающая изменение данных задним числом.
-3. **Официальная отчетность в 1 клик:**
-   * Выгрузка стандартной факультетской рапортички в Excel по алфавиту с подсчетом часов (Н/У).
-   * Автоматическая отправка старосте в Telegram каждую субботу в 16:00.
-4. **Гарантированное оповещение:**
-   * Критический алерт: упоминание `@all` в общем чате + мгновенная персональная рассылка в ЛС каждому студенту бота с отслеживанием прочтения.
+# Первичный сидинг базы данных (группа 240326 и сетка БГПУ)
+python data/seed_data.py
 
----
-
-## 🚦 План следующих этапов реализации
-
+# Запуск единого процесса (FastAPI + aiogram Bot + Scheduler)
+python main.py
 ```
-[x] Этап 0: Согласование архитектуры и написание полной документации (SRS, ARCH, DB, API, DEPLOY)
-[ ] Этап 1: Инициализация репозитория, настройка окружения, моделей SQLAlchemy и миграций Alembic
-[ ] Этап 2: Разработка асинхронного REST API (FastAPI) и валидации initData
-[ ] Этап 3: Создание Telegram-бота на aiogram 3.x (онбординг по вайтлисту, подтверждение старостой)
-[ ] Этап 4: Верстка Telegram Mini App (карточки расписания, геолокация, интерактивная шахматка)
-[ ] Этап 5: Реализация генератора рапортички в Excel (.xlsx) и фонового планировщика
-[ ] Этап 6: Сквозное тестирование и боевой деплой
+
+### 2. Запуск в Docker Compose
+```bash
+docker-compose up -d --build
 ```
+
+---
+
+## 🧪 Запуск тестов
+```bash
+source .venv/bin/activate
+pytest -v
+```
+
+---
+
+## 📁 Структура проекта
+```
+tg_bot/
+├── api/                       # REST API (FastAPI)
+│   ├── routes/               # Эндпоинты (auth, schedule, attendance, alerts, reports, health)
+│   ├── schemas/              # Pydantic v2 схемы данных
+│   ├── dependencies.py       # RBAC Guards и валидация X-Telegram-Init-Data
+│   └── app.py                # Конфигурация FastAPI и статики webapp
+├── bot/                       # Telegram Bot (aiogram 3.x)
+│   ├── handlers/             # Обработчики онбординга, команд и колбэков
+│   ├── keyboards/            # Инлайн-клавиатуры выбора ФИО и меню WebApp
+│   └── bot.py                # Инициализация Bot и Dispatcher
+├── core/                      # Ядро приложения
+│   ├── config.py             # Настройки Pydantic-Settings
+│   ├── database.py           # SQLAlchemy 2.0 AsyncEngine + SQLite WAL
+│   └── security.py           # HMAC-SHA256 валидация initData
+├── models/                    # ORM модели (SQLAlchemy Declarative)
+│   ├── user.py               # Student (студенты, роли, подгруппы)
+│   ├── schedule.py           # Subject, ScheduleSlot, PairsRegistry
+│   ├── attendance.py         # Attendance (журнал посещаемости)
+│   └── audit.py              # AuditLog, BroadcastMessage
+├── services/                  # Сервисный слой
+│   ├── geo_service.py        # Двухфазный Geofencing (Bounding Box + Haversine)
+│   ├── attendance_service.py # Чекин, шахматка, оверрайды, блокировка
+│   ├── excel_generator.py    # Официальная ведомость деканата (.xlsx)
+│   ├── broadcaster.py        # Token-bucket рассыльщик сообщений
+│   └── scheduler.py          # APScheduler (автоотчет по субботам в 16:00)
+├── webapp/                    # Фронтенд Telegram Mini App (HTML5 / CSS3 / Vanilla JS)
+│   ├── index.html            # Каркас SPA
+│   ├── css/styles.css        # Стили под тему Telegram
+│   └── js/                   # Модули API, Geocheck, Grid, App
+├── data/                      # Сидирование
+│   └── seed_data.py          # Список группы 240326 и расписание корпусов БГПУ
+├── tests/                     # Комплекс из 34 автоматических тестов (pytest)
+├── Dockerfile                 # Multi-stage production образ
+├── docker-compose.yml         # Контейнеризация с постоянным volume
+├── requirements.txt           # Зависимости
+└── main.py                    # Главная точка входа
+```
+
+---
+
+## 🏛️ Корпуса БГПУ в системе
+- **Корпус 2 (БГПУ им. Максима Танка):** г. Минск, ул. Советская, 18 (`lat: 53.893769, lon: 27.544440`)
+- **Главный корпус:** г. Минск, пл. Независимости / ул. Советская, 18 (`lat: 53.894100, lon: 27.544600`)
+- **Радиус фиксации:** 150 метров (GPS Accuracy $\le 50$ м).

@@ -1,80 +1,64 @@
-"""
-Главная точка входа АРМ Старосты («Пульт управления группой 240326»).
-Запускает FastAPI сервер и фоновый опрос Telegram-бота (aiogram 3.x).
-"""
 import asyncio
-from contextlib import asynccontextmanager
 import logging
+import sys
+
 import uvicorn
-from fastapi import FastAPI
 
-from app.api.app import app
-from app.bot.bot import get_bot, get_dispatcher
-from app.core.config import settings
-from app.core.seed import seed_database
-from app.services.scheduler_service import start_scheduler, stop_scheduler
+from api.app import create_app
+from bot.bot import create_bot_and_dispatcher, setup_bot_commands
+from core.config import settings
+from core.database import engine
+from data.seed_data import seed_database
+from services.scheduler import setup_scheduler
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger("ARM_Starosta")
+logger = logging.getLogger("main")
 
 
-@asynccontextmanager
-async def lifespan(app_instance: FastAPI):
-    """Жизненный цикл FastAPI приложения (Lifespan)."""
-    logger.info("Инициализация базы данных и сидинг вайтлиста 240326...")
+async def run_services():
+    # 1. Ensure DB and seed data
+    logger.info("[INIT] Checking and seeding database...")
     await seed_database()
-    logger.info("База данных готова к работе.")
 
-    polling_task = None
-    if not settings.WEBHOOK_URL:
-        async def safe_polling():
-            try:
-                bot = get_bot()
-                await bot.delete_webhook(drop_pending_updates=True)
-                dp = get_dispatcher()
-                logger.info("Запуск Telegram-бота в режиме Long Polling...")
-                await dp.start_polling(bot, handle_signals=False)
-            except Exception as e:
-                logger.warning(f"Ошибка при работе Telegram-бота: {e}")
-        polling_task = asyncio.create_task(safe_polling())
+    # 2. Initialize Bot and Dispatcher
+    bot, dp = create_bot_and_dispatcher()
+    await setup_bot_commands(bot)
 
-    else:
-        try:
-            bot = get_bot()
-            logger.info(f"Настройка вебхука: {settings.WEBHOOK_URL}")
-            await bot.set_webhook(url=settings.WEBHOOK_URL, secret_token=settings.WEBHOOK_SECRET)
-        except Exception as e:
-            logger.warning(f"Ошибка настройки вебхука: {e}")
+    # 3. Setup Scheduler
+    scheduler = setup_scheduler(bot)
 
-    bot = get_bot()
-    start_scheduler(bot)
+    # 4. Create FastAPI app
+    app = create_app()
 
-    yield
+    # 5. Start Uvicorn Server & Bot polling concurrently
+    config = uvicorn.Config(app=app, host=settings.HOST, port=settings.PORT, log_level="info", lifespan="on")
+    server = uvicorn.Server(config)
 
-    logger.info("Остановка приложения...")
-    stop_scheduler()
-    if polling_task:
-        polling_task.cancel()
+    logger.info(f"[STARTUP] Starting FastAPI server on http://{settings.HOST}:{settings.PORT}")
+    logger.info("[STARTUP] Starting Telegram bot polling...")
+
     try:
+        # Run Uvicorn and aiogram polling concurrently
+        await asyncio.gather(server.serve(), dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()))
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        logger.info("[SHUTDOWN] Stopping services...")
+    finally:
+        scheduler.shutdown(wait=False)
         await bot.session.close()
-    except Exception:
-        pass
-
-
-app.router.lifespan_context = lifespan
+        await engine.dispose()
+        logger.info("[SHUTDOWN] Services stopped gracefully.")
 
 
 def main():
-    """Запуск Uvicorn сервера."""
-    uvicorn.run(
-        app,
-        host=settings.HOST,
-        port=settings.PORT,
-        log_level="info",
-    )
+    try:
+        asyncio.run(run_services())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("[SHUTDOWN] Exiting...")
 
 
 if __name__ == "__main__":

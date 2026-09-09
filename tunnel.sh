@@ -1,4 +1,4 @@
 #!/data/data/com.termux/files/usr/bin/bash
-echo "🌐 Запуск защищенного HTTPS-туннеля для Mini App..."
-echo "Скопируйте полученную https:// ссылку для меню бота:"
+echo "🌐 Запуск бесплатного HTTPS-туннеля для Telegram Mini App..."
+echo "Скопируйте появившуюся https:// ссылку и укажите её в Telegram BotFather:"
 ssh -R 80:localhost:8000 nokey@localhost.run

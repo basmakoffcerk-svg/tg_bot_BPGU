@@ -2,108 +2,195 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>АРМ Старосты — Группа 240326 Матинф</title>
-  <!-- Telegram WebApp SDK -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>АРМ Старосты 240326</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div id="app" class="container">
-    <!-- Панель отладки для браузера (Dev / Demo Mode) -->
-    <div id="dev-bar" class="dev-bar" style="display: none;">
-      <span class="dev-title">🎭 Профиль:</span>
-      <select id="dev-user-select" class="dev-select"></select>
-    </div>
-
-    <!-- Шапка профиля -->
-    <header class="header">
-      <div class="user-info">
-        <h2 id="user-name">Загрузка...</h2>
-        <div class="user-meta">
-          <span class="badge" id="user-group">Группа</span>
-          <span class="badge" id="user-subgroup">Подгруппа ...</span>
-          <span class="badge badge-role" id="user-role">...</span>
+  <div id="app-container">
+    <!-- Header with user profile -->
+    <header class="app-header">
+      <div class="user-badge">
+        <div class="avatar-circle" id="user-avatar">?</div>
+        <div class="user-info">
+          <h2 id="user-full-name">Загрузка...</h2>
+          <span class="sub-badge" id="user-role-subgroup">Группа 240326</span>
         </div>
       </div>
-      <div class="week-info">
-        <span id="week-badge" class="badge-week">...</span>
+      <div class="week-indicator" id="week-badge">
+        <span id="week-type-label">Числ</span>
+        <small id="week-num-label">нед 1</small>
       </div>
     </header>
 
-    <!-- Навигация по вкладкам -->
-    <nav class="nav-tabs">
-      <button class="tab-btn active" data-tab="tab-schedule">📅 Расписание</button>
-      <button class="tab-btn" id="tab-btn-grid" data-tab="tab-grid" style="display: none;">📋 Шахматка</button>
-      <button class="tab-btn" id="tab-btn-alerts" data-tab="tab-alerts" style="display: none;">📢 Алерты</button>
+    <!-- Navigation Bar (Tabs) -->
+    <nav class="nav-tabs" id="nav-tabs">
+      <button class="tab-btn active" data-tab="student-tab" id="tab-btn-student">
+        <span class="tab-icon">🎓</span> Мои пары
+      </button>
+      <button class="tab-btn" data-tab="starosta-tab" id="tab-btn-starosta" style="display: none;">
+        <span class="tab-icon">👑</span> Шахматка
+      </button>
+      <button class="tab-btn" data-tab="stats-tab" id="tab-btn-stats">
+        <span class="tab-icon">📊</span> Сводка
+      </button>
     </nav>
 
-    <!-- Вкладка 1: Расписание студента -->
-    <section id="tab-schedule" class="tab-content active">
-      <div class="section-title">Занятия на сегодня</div>
-      <div id="schedule-list" class="cards-list">
-        <div class="skeleton-card">Загрузка расписания...</div>
-      </div>
-    </section>
+    <!-- Notification / Alert Banner -->
+    <div id="alert-banner" class="alert-banner" style="display: none;">
+      <span id="alert-text"></span>
+      <button class="alert-close" onclick="closeAlert()">✕</button>
+    </div>
 
-    <!-- Вкладка 2: Шахматка старосты -->
-    <section id="tab-grid" class="tab-content">
-      <div class="grid-controls">
-        <div class="section-title" id="grid-pair-title">Шахматка группы</div>
-        <div style="display: flex; gap: 6px;">
-          <button id="btn-export-excel" class="btn btn-primary btn-sm">📥 Excel</button>
-          <button id="btn-lock-pair" class="btn btn-warning btn-sm">🔒 Зафиксировать</button>
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- TAB 1: Student Schedule & Geocheckin -->
+      <section id="student-tab" class="tab-content active">
+        <div class="section-title-row">
+          <h3 id="current-date-title">Расписание на сегодня</h3>
+          <button class="refresh-btn" onclick="loadSchedule()" title="Обновить">🔄</button>
+        </div>
+
+        <div id="schedule-cards" class="schedule-cards">
+          <div class="skeleton-card"></div>
+          <div class="skeleton-card"></div>
+        </div>
+
+        <!-- GPS Diagnostics Card -->
+        <div class="gps-card" id="gps-status-card">
+          <div class="gps-status-header">
+            <span>📡 Статус GPS: <strong id="gps-accuracy-text">Ожидание...</strong></span>
+            <button class="mini-btn" onclick="probeGPS()">Проверить</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: Starosta Live Grid (Шахматка) -->
+      <section id="starosta-tab" class="tab-content">
+        <div class="starosta-controls">
+          <div class="pair-selector-row">
+            <select id="grid-pair-select" class="styled-select" onchange="loadGridForSelectedPair()">
+              <option value="">Выберите пару...</option>
+            </select>
+            <button class="action-btn lock-btn" id="btn-lock-pair" onclick="lockCurrentPair()" title="Зафиксировать пару">
+              🔒 Запереть
+            </button>
+          </div>
+
+          <!-- Live Attendance Summary Chips -->
+          <div class="summary-chips" id="grid-summary-chips">
+            <div class="chip green"><span id="chip-present">0</span> 🟢</div>
+            <div class="chip yellow"><span id="chip-manual">0</span> 🟡</div>
+            <div class="chip blue"><span id="chip-late">0</span> 🔵</div>
+            <div class="chip purple"><span id="chip-excused">0</span> 🟣</div>
+            <div class="chip gray"><span id="chip-unexcused">0</span> 🔴</div>
+          </div>
+        </div>
+
+        <!-- Interactive Grid List -->
+        <div id="starosta-grid" class="students-grid-list">
+          <!-- Populated by JS -->
+        </div>
+
+        <!-- Fast Actions Footer -->
+        <div class="starosta-actions-footer">
+          <button class="primary-btn" onclick="openBroadcastModal()">📢 Экстренное объявление</button>
+          <button class="secondary-btn" onclick="exportReportWeekly()">📥 Выгрузить рапортичку (.xlsx)</button>
+        </div>
+      </section>
+
+      <!-- TAB 3: Student Stats -->
+      <section id="stats-tab" class="tab-content">
+        <div class="stats-overview-card">
+          <h3>Статистика посещаемости</h3>
+          <div class="stats-numbers-row">
+            <div class="stat-box">
+              <span class="stat-val" id="stat-present-count">0</span>
+              <span class="stat-lbl">Присутствий</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-val" id="stat-absent-hours">0 ч</span>
+              <span class="stat-lbl">Пропущено</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-val" id="stat-rate-percent">100%</span>
+              <span class="stat-lbl">Посещаемость</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-card">
+          <h4>📍 Геолокация корпусов БГПУ</h4>
+          <p>• <b>Главный корпус:</b> ул. Октябрьской революции, 3а</p>
+          <p>• <b>Корпус Б:</b> ул. Чернышевского, 49/1</p>
+          <p>• <b>Корпус 2:</b> ул. Советская, 11</p>
+          <small>Допустимый радиус отметки: 150 метров.</small>
+        </div>
+      </section>
+    </main>
+
+    <!-- MODAL: Excuse Reason & Manual Override -->
+    <div id="modal-override" class="modal-overlay" style="display: none;">
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3 id="modal-student-name">Иванов Иван</h3>
+          <button class="modal-close" onclick="closeModal('modal-override')">✕</button>
+        </div>
+        <div class="modal-body">
+          <label>Статус посещаемости:</label>
+          <select id="modal-status-select" class="styled-select">
+            <option value="PRESENT">🟢 PRESENT (Присутствовал)</option>
+            <option value="MANUAL_CONFIRM">🟡 MANUAL_CONFIRM (Подтвержден вручную)</option>
+            <option value="LATE">🔵 LATE (Опоздание)</option>
+            <option value="ABSENT_EXCUSED">🟣 ABSENT_EXCUSED (Уважительная)</option>
+            <option value="ABSENT_UNEXCUSED">🔴 ABSENT_UNEXCUSED (Неуважительная)</option>
+          </select>
+
+          <label style="margin-top: 12px;">Причина / Комментарий (для Уважительной):</label>
+          <textarea id="modal-excuse-text" class="styled-textarea" placeholder="Справка №..., заявление на имя декана..."></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" onclick="closeModal('modal-override')">Отмена</button>
+          <button class="primary-btn" onclick="submitModalOverride()">Сохранить</button>
         </div>
       </div>
-      <div class="grid-summary" id="grid-summary">
-        <!-- Сводка: Всего, Было, Пропусков -->
-      </div>
-      <div id="grid-students-list" class="grid-list">
-        <!-- Список 25-30 студентов -->
-      </div>
-    </section>
+    </div>
 
-    <!-- Вкладка 3: Экстренные оповещения -->
-    <section id="tab-alerts" class="tab-content">
-      <div class="section-title">Экстренное вещание</div>
-      <div class="alert-form">
-        <label>Тип сообщения:</label>
-        <select id="alert-type" class="form-input">
-          <option value="CRITICAL">🔴 Критический алерт (@all + принудительный ЛС)</option>
-          <option value="INFO">🟡 Информационное объявление (в группу)</option>
-        </select>
-        <label>Тема:</label>
-        <input type="text" id="alert-title" class="form-input" placeholder="Перенос пары...">
-        <label>Текст сообщения:</label>
-        <textarea id="alert-body" class="form-input" rows="4" placeholder="Введите текст..."></textarea>
-        <button id="btn-send-alert" class="btn btn-danger">Отправить оповещение группе</button>
-      </div>
-    </section>
-  </div>
+    <!-- MODAL: Broadcast Message -->
+    <div id="modal-broadcast" class="modal-overlay" style="display: none;">
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3>📢 Оповещение группы</h3>
+          <button class="modal-close" onclick="closeModal('modal-broadcast')">✕</button>
+        </div>
+        <div class="modal-body">
+          <label>Тип рассылки:</label>
+          <select id="broadcast-type-select" class="styled-select">
+            <option value="INFO">🟡 Обычное объявление (в группу)</option>
+            <option value="CRITICAL">🔴 КРИТИЧЕСКИЙ АЛЕРТ (@all + ЛС каждому)</option>
+          </select>
 
-  <!-- Модальное окно уважительной причины (Override) -->
-  <div id="excuse-modal" class="modal-backdrop" style="display: none;">
-    <div class="modal-card">
-      <h3 id="modal-student-name">Студент</h3>
-      <p>Выберите причину пропуска:</p>
-      <select id="modal-status-select" class="form-input">
-        <option value="PRESENT">🟢 Присутствует (Был)</option>
-        <option value="ABSENT_UNEXCUSED">🔴 Неуважительный пропуск (Н)</option>
-        <option value="ABSENT_EXCUSED">🟣 Уважительный пропуск (У)</option>
-        <option value="MANUAL_CONFIRM">🟡 Подтвержден вручную (телефон сел)</option>
-        <option value="LATE">🔵 Опоздание (О)</option>
-      </select>
-      <input type="text" id="modal-excuse-reason" class="form-input" placeholder="Номер справки или заявления...">
-      <div class="modal-actions">
-        <button id="btn-modal-cancel" class="btn btn-secondary">Отмена</button>
-        <button id="btn-modal-save" class="btn btn-primary">Сохранить</button>
+          <label style="margin-top: 10px;">Заголовок:</label>
+          <input type="text" id="broadcast-title" class="styled-input" placeholder="Перенос пары...">
+
+          <label style="margin-top: 10px;">Текст сообщения:</label>
+          <textarea id="broadcast-body" class="styled-textarea" rows="4" placeholder="Текст объявления..."></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" onclick="closeModal('modal-broadcast')">Отмена</button>
+          <button class="primary-btn" onclick="submitBroadcast()">Отправить</button>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Всплывающий статус (Toast) -->
-  <div id="toast" class="toast"></div>
-
+  <script src="js/api.js"></script>
+  <script src="js/geocheck.js"></script>
+  <script src="js/grid.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

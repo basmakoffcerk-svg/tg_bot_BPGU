@@ -1,0 +1,20 @@
+app: tg-bot-bpgu
+services:
+  - name: bot-backend
+    type: web
+    ports:
+      - port: 8000
+        protocol: http
+    routes:
+      - path: /
+    regions:
+      - fra
+    env:
+      - key: BOT_TOKEN
+        value: "8713079092:AAG6B-YEpmQ4hl7-xuQtOc2XlrSDG0gSvcw"
+      - key: STAROSTA_TELEGRAM_ID
+        value: "1131010316"
+      - key: TIMEZONE
+        value: "Europe/Minsk"
+      - key: APP_ENV
+        value: "production"

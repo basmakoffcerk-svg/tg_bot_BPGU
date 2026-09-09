@@ -1,36 +1,13 @@
-# Python & virtual environment
-.venv/
-venv/
-env/
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Database & SQLite files
-data/*.sqlite
-data/*.sqlite-wal
-data/*.sqlite-shm
-data/backups/
-*.sqlite
-*.db
-
-# Secrets & Environment variables
 .env
-.env.local
-.env.production
-
-# IDE & OS
-.DS_Store
-.idea/
-.vscode/
-
-# Pytest & coverage
-.pytest_cache/
-htmlcov/
+.venv
+.venv_debian
+*.pyc
+__pycache__/
 .coverage
-
-# Temporary files & reports
-*.xlsx
-!docs/*.xlsx
-!app/templates/*.xlsx
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+data/database.sqlite
+data/backups/
+*.log
