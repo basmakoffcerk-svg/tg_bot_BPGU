@@ -16,12 +16,19 @@ if "sqlite" in db_url:
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
 
-# Performance-tuned async engine for SQLite WAL
+# Automatic driver adjustment for PostgreSQL/SQLite
+raw_db_url = settings.DATABASE_URL
+if raw_db_url.startswith("postgres://"):
+    raw_db_url = raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif raw_db_url.startswith("postgresql://") and "+asyncpg" not in raw_db_url:
+    raw_db_url = raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+# Performance-tuned async engine
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    raw_db_url,
     echo=(settings.APP_ENV == "debug"),
     future=True,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
+    connect_args={"check_same_thread": False} if "sqlite" in raw_db_url else {},
 )
 
 
